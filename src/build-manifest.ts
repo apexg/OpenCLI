@@ -114,7 +114,10 @@ if (fs.existsSync(CLIS_DIR)) {
       if (file.endsWith('.yaml') || file.endsWith('.yml')) {
         const entry = scanYaml(filePath, site);
         if (entry) manifest.push(entry);
-      } else if (file.endsWith('.ts') && file !== 'index.ts') {
+      } else if (
+        (file.endsWith('.ts') && !file.endsWith('.d.ts') && file !== 'index.ts') ||
+        (file.endsWith('.js') && !file.endsWith('.d.js') && file !== 'index.js')
+      ) {
         manifest.push(scanTs(filePath, site));
       }
     }
