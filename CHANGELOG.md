@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.7.7](https://github.com/jackwener/opencli/compare/v1.7.6...v1.7.7) (2026-04-22)
+
+### Features
+
+* **Human-like input simulation** — `OPENCLI_HUMAN_MODE=true` enables behavior-based anti-bot bypass with:
+  - **Mouse**: Bezier curve trajectory, ease-in-out speed (slow→fast→slow), 20% overshoot probability, ±1.5px jitter
+  - **Keyboard**: variable typing speed (30-100ms per char), 3% typo simulation (adjacent key + backspace), thinking pauses (0.5-1.5s every 5 chars)
+  - **Scroll**: non-linear scrolling (300-800px per step), reading pauses (0.5-2.5s), 10% backtrack probability
+* **CDP native human operations** — `smartClick`, `smartType`, `humanMove` methods via CDP Input domain
+* **BasePage human mode integration** — `click()` and `typeText()` use human-like operations when `OPENCLI_HUMAN_MODE=true`
+* **Xiaohongshu publish human mode** — adapter uses `smartType`/`smartClick` for natural input and button clicks
+
+### Configuration
+
+Environment variables for fine-tuning human behavior:
+- `OPENCLI_HUMAN_MOUSE_SPEED_MIN/MAX` — mouse speed (px/s)
+- `OPENCLI_HUMAN_MOUSE_JITTER` — jitter range (±px)
+- `OPENCLI_HUMAN_MOUSE_OVERSHOOT_PROB` — overshoot probability
+- `OPENCLI_HUMAN_TYPO_PROB` — typo probability
+- `OPENCLI_HUMAN_KEY_DELAY_MIN/MAX` — key delay (ms)
+- `OPENCLI_HUMAN_SCROLL_STEP_MIN/MAX` — scroll step (px)
+- `OPENCLI_HUMAN_SCROLL_PAUSE_MIN/MAX` — scroll pause (ms)
+
 ## [1.7.6](https://github.com/jackwener/opencli/compare/v1.7.5...v1.7.6) (2026-04-21)
 
 Extension bumped to 1.0.2 (body-truncation signal unified across raw / detail / fallback paths).
