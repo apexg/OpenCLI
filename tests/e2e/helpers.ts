@@ -25,14 +25,16 @@ export interface CliResult {
  */
 export async function runCli(
   args: string[],
-  opts: { timeout?: number; env?: Record<string, string> } = {},
+  opts: { timeout?: number; env?: Record<string, string>; maxBuffer?: number } = {},
 ): Promise<CliResult> {
   const timeout = opts.timeout ?? 30_000;
+  const maxBuffer = opts.maxBuffer ?? 10 * 1024 * 1024; // 10MB default for large outputs like screenshots
   try {
     const runtime = process.env.OPENCLI_TEST_RUNTIME || 'node';
     const { stdout, stderr } = await exec(runtime, [MAIN, ...args], {
       cwd: ROOT,
       timeout,
+      maxBuffer,
       env: {
         ...process.env,
         // Prevent chalk colors from polluting test assertions

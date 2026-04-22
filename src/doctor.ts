@@ -1,12 +1,13 @@
 /**
  * opencli doctor — diagnose browser connectivity.
  *
- * Simplified for the daemon-based architecture.
+ * Supports both Browser Bridge extension mode and direct CDP mode.
+ * When OPENCLI_CDP_ENDPOINT is set, checks CDP connectivity instead of extension.
  */
 
 import { styleText } from 'node:util';
 import { DEFAULT_DAEMON_PORT } from './constants.js';
-import { BrowserBridge } from './browser/index.js';
+import { BrowserBridge, CDPBridge } from './browser/index.js';
 import { getDaemonHealth, listSessions } from './browser/daemon-client.js';
 import { getErrorMessage } from './errors.js';
 import { getRuntimeLabel } from './runtime-detect.js';
@@ -53,11 +54,14 @@ export type ConnectivityResult = {
   ok: boolean;
   error?: string;
   durationMs: number;
+  mode?: 'cdp' | 'extension';
 };
 
 
 export type DoctorReport = {
   cliVersion?: string;
+  cdpMode: boolean;
+  cdpEndpoint?: string;
   daemonRunning: boolean;
   daemonFlaky?: boolean;
   daemonVersion?: string;
@@ -72,22 +76,69 @@ export type DoctorReport = {
 
 /**
  * Test connectivity by attempting a real browser command.
+ * In CDP mode, connects directly to Chrome via CDP endpoint.
+ * In extension mode, uses BrowserBridge through daemon.
  */
 export async function checkConnectivity(opts?: { timeout?: number }): Promise<ConnectivityResult> {
   const start = Date.now();
+  const cdpEndpoint = process.env.OPENCLI_CDP_ENDPOINT;
+
   try {
-    const bridge = new BrowserBridge();
-    const page = await bridge.connect({ timeout: opts?.timeout ?? DOCTOR_LIVE_TIMEOUT_SECONDS });
-    // Try a simple eval to verify end-to-end connectivity
-    await page.evaluate('1 + 1');
-    await bridge.close();
-    return { ok: true, durationMs: Date.now() - start };
+    if (cdpEndpoint) {
+      // CDP mode: direct connection without daemon/extension
+      const bridge = new CDPBridge();
+      const page = await bridge.connect({ timeout: opts?.timeout ?? DOCTOR_LIVE_TIMEOUT_SECONDS });
+      await page.evaluate('1 + 1');
+      await bridge.close();
+      return { ok: true, durationMs: Date.now() - start, mode: 'cdp' };
+    } else {
+      // Extension mode: Browser Bridge through daemon
+      const bridge = new BrowserBridge();
+      const page = await bridge.connect({ timeout: opts?.timeout ?? DOCTOR_LIVE_TIMEOUT_SECONDS });
+      await page.evaluate('1 + 1');
+      await bridge.close();
+      return { ok: true, durationMs: Date.now() - start, mode: 'extension' };
+    }
   } catch (err) {
-    return { ok: false, error: getErrorMessage(err), durationMs: Date.now() - start };
+    return {
+      ok: false,
+      error: getErrorMessage(err),
+      durationMs: Date.now() - start,
+      mode: cdpEndpoint ? 'cdp' : 'extension',
+    };
   }
 }
 
 export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
+  const cdpEndpoint = process.env.OPENCLI_CDP_ENDPOINT;
+  const cdpMode = !!cdpEndpoint;
+
+  // In CDP mode, skip daemon/extension checks entirely
+  if (cdpMode) {
+    let connectivity: ConnectivityResult | undefined;
+    if (opts.live) {
+      connectivity = await checkConnectivity();
+    }
+
+    const issues: string[] = [];
+    if (connectivity && !connectivity.ok) {
+      issues.push(`CDP connectivity test failed: ${connectivity.error ?? 'unknown'}`);
+      issues.push(`  Endpoint: ${cdpEndpoint}`);
+      issues.push(`  Hint: Ensure Chrome is running with --remote-debugging-port=<port>`);
+    }
+
+    return {
+      cliVersion: opts.cliVersion,
+      cdpMode: true,
+      cdpEndpoint,
+      daemonRunning: false,
+      extensionConnected: false,
+      connectivity,
+      issues,
+    };
+  }
+
+  // Extension mode: standard daemon/extension health checks
   // Live connectivity check doubles as auto-start (bridge.connect spawns daemon).
   let connectivity: ConnectivityResult | undefined;
   if (opts.live) {
@@ -197,6 +248,7 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
 
   return {
     cliVersion: opts.cliVersion,
+    cdpMode: false,
     daemonRunning,
     daemonFlaky,
     daemonVersion: health.status?.daemonVersion,
@@ -213,6 +265,34 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
 export function renderBrowserDoctorReport(report: DoctorReport): string {
   const lines = [styleText('bold', `opencli v${report.cliVersion ?? 'unknown'} doctor`) + styleText('dim', ` (${getRuntimeLabel()})`), ''];
 
+  // CDP mode: show simplified report
+  if (report.cdpMode) {
+    lines.push(styleText('cyan', '[CDP]') + ' Mode: direct Chrome DevTools Protocol connection');
+    lines.push(styleText('dim', `  Endpoint: ${report.cdpEndpoint ?? 'not set'}`));
+
+    if (report.connectivity) {
+      const connIcon = report.connectivity.ok ? styleText('green', '[OK]') : styleText('red', '[FAIL]');
+      const detail = report.connectivity.ok
+        ? `connected in ${(report.connectivity.durationMs / 1000).toFixed(1)}s`
+        : `failed (${report.connectivity.error ?? 'unknown'})`;
+      lines.push(`${connIcon} Connectivity: ${detail}`);
+    } else {
+      lines.push(`${styleText('dim', '[SKIP]')} Connectivity: skipped (--no-live)`);
+    }
+
+    if (report.issues.length) {
+      lines.push('', styleText('yellow', 'Issues:'));
+      for (const issue of report.issues) {
+        lines.push(styleText('dim', `  • ${issue}`));
+      }
+    } else if (report.connectivity?.ok) {
+      lines.push('', styleText('green', 'CDP connection healthy. Chrome is accepting commands.'));
+    }
+
+    return lines.join('\n');
+  }
+
+  // Extension mode: standard report
   // Daemon status
   const daemonIcon = report.daemonFlaky
     ? styleText('yellow', '[WARN]')

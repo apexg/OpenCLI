@@ -281,6 +281,15 @@ async function resolveBrowserTargetInSession(
     );
   }
 
+  // Check if candidate is a numeric index - resolve to actual page ID
+  const numericIndex = parseInt(candidate, 10);
+  if (!Number.isNaN(numericIndex) && numericIndex >= 0 && Array.isArray(tabs)) {
+    const tab = tabs[numericIndex];
+    if (tab && typeof tab === 'object' && 'page' in tab && typeof tab.page === 'string') {
+      return tab.page;
+    }
+  }
+
   if (Array.isArray(tabs) && hasBrowserTabTarget(tabs, candidate)) {
     return candidate;
   }
@@ -302,17 +311,36 @@ async function resolveStoredBrowserTarget(page: import('./types.js').IPage, scop
   return resolveBrowserTargetInSession(page, defaultPage, { scope, source: 'saved' });
 }
 
-/** Create a browser page for browser commands. Uses a dedicated browser workspace for session persistence. */
-async function getBrowserPage(targetPage?: string): Promise<import('./types.js').IPage> {
-  const { BrowserBridge } = await import('./browser/index.js');
-  const bridge = new BrowserBridge();
+/** Create a browser page for browser commands. Uses a dedicated browser workspace for session persistence.
+ *  When OPENCLI_CDP_ENDPOINT is set, uses CDPBridge directly instead of BrowserBridge extension.
+ *  Returns both the page and the bridge for cleanup after command execution. */
+async function getBrowserPageWithBridge(targetPage?: string): Promise<{
+  page: import('./types.js').IPage;
+  bridge: import('./browser/index.js').BrowserBridge | import('./browser/cdp.js').CDPBridge;
+}> {
+  const cdpEndpoint = process.env.OPENCLI_CDP_ENDPOINT;
+  let bridge: import('./browser/index.js').BrowserBridge | import('./browser/cdp.js').CDPBridge;
+  let page: import('./types.js').IPage;
+
   const envTimeout = process.env.OPENCLI_BROWSER_TIMEOUT;
   const idleTimeout = envTimeout ? parseInt(envTimeout, 10) : undefined;
-  const page = await bridge.connect({
-    timeout: 30,
-    workspace: DEFAULT_BROWSER_WORKSPACE,
-    ...(idleTimeout && idleTimeout > 0 && { idleTimeout }),
-  });
+
+  if (cdpEndpoint) {
+    // CDP mode: direct connection without extension
+    const { CDPBridge } = await import('./browser/cdp.js');
+    bridge = new CDPBridge();
+    page = await bridge.connect({ cdpEndpoint, timeout: 30 });
+  } else {
+    // Extension mode: Browser Bridge
+    const { BrowserBridge } = await import('./browser/index.js');
+    bridge = new BrowserBridge();
+    page = await bridge.connect({
+      timeout: 30,
+      workspace: DEFAULT_BROWSER_WORKSPACE,
+      ...(idleTimeout && idleTimeout > 0 && { idleTimeout }),
+    });
+  }
+
   const resolvedTargetPage = targetPage
     ? await resolveBrowserTargetInSession(page, targetPage, { scope: DEFAULT_BROWSER_WORKSPACE, source: 'explicit' })
     : await resolveStoredBrowserTarget(page, DEFAULT_BROWSER_WORKSPACE);
@@ -322,6 +350,12 @@ async function getBrowserPage(targetPage?: string): Promise<import('./types.js')
     }
     page.setActivePage(resolvedTargetPage);
   }
+  return { page, bridge };
+}
+
+/** Legacy wrapper for compatibility */
+async function getBrowserPage(targetPage?: string): Promise<import('./types.js').IPage> {
+  const { page } = await getBrowserPageWithBridge(targetPage);
   return page;
 }
 
@@ -528,10 +562,13 @@ export function createProgram(BUILTIN_CLIS: string, USER_CLIS: string): Command 
   /** Wrap browser actions with error handling and optional --json output */
   function browserAction(fn: (page: Awaited<ReturnType<typeof getBrowserPage>>, ...args: any[]) => Promise<unknown>) {
     return async (...args: any[]) => {
+      const cdpEndpoint = process.env.OPENCLI_CDP_ENDPOINT;
+      let bridge: import('./browser/index.js').BrowserBridge | import('./browser/cdp.js').CDPBridge | null = null;
       try {
         const command = args.at(-1) instanceof Command ? args.at(-1) as Command : undefined;
         const targetPage = getBrowserTargetId(command);
-        const page = await getBrowserPage(targetPage);
+        const { page, bridge: b } = await getBrowserPageWithBridge(targetPage);
+        bridge = b;
         await fn(page, ...args);
       } catch (err) {
         if (err instanceof BrowserConnectError) {
@@ -551,6 +588,15 @@ export function createProgram(BUILTIN_CLIS: string, USER_CLIS: string): Command 
           }
         }
         process.exitCode = EXIT_CODES.GENERIC_ERROR;
+      } finally {
+        // CDP mode: close WebSocket connection to prevent process hanging
+        if (cdpEndpoint && bridge) {
+          try {
+            await bridge.close();
+          } catch {
+            // Ignore close errors
+          }
+        }
       }
     };
   }
