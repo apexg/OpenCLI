@@ -119,10 +119,64 @@ Positional for primary required argument (query, symbol, id, url, username). Nam
 | `OPENCLI_CDP_ENDPOINT` | CDP endpoint URL — bypass Browser Bridge extension, connect directly to Chrome (e.g. `http://localhost:9222`) |
 | `OPENCLI_CDP_STEALTH` | Inject anti-detection patches. Default `true`, set `false` to disable when your Chrome already has stealth |
 | `OPENCLI_CDP_TARGET` | Filter CDP targets by URL/title substring when multiple pages exist |
+| `OPENCLI_HUMAN_MODE` | Enable human-like behavior simulation (mouse trajectory, typing with typos, scrolling pauses). Default `false` |
 | `OPENCLI_DAEMON_PORT` | HTTP port for daemon-extension bridge (default: 19825) |
 | `OPENCLI_VERBOSE` / `-v` | Enable verbose logging |
 | `OPENCLI_LIVE` / `--live` | Keep automation window open after command |
 | `OPENCLI_WINDOW_FOCUSED` / `--focus` | Open automation window in foreground |
+
+## Human-like Behavior Mode
+
+When `OPENCLI_HUMAN_MODE=true` is set, OpenCLI simulates human behavior to bypass behavior-based anti-bot detection:
+
+### Mouse Behavior
+- **Bezier curve trajectory**: Mouse moves along curved paths, not straight lines
+- **Variable speed**: Ease-in-out acceleration (slow → fast → slow)
+- **Overshoot**: 20% chance to overshoot target and correct back
+- **Jitter**: ±1.5px micro-tremors on each trajectory point
+- **Click delay**: 50-150ms between mouseDown and mouseUp
+
+### Keyboard Behavior
+- **Variable typing speed**: 30-100ms per character
+- **Typo simulation**: 3% probability of pressing adjacent key, then Backspace
+- **Thinking pauses**: Every 5 characters, 35% chance of 0.5-1.5s pause
+
+### Scroll Behavior
+- **Non-linear scrolling**: 300-800px per step with reading pauses (0.5-2.5s)
+- **Backtrack**: 10% chance to scroll back slightly (looking back behavior)
+
+### Configuration Overrides
+Environment variables can fine-tune human behavior:
+
+```bash
+# Mouse settings
+export OPENCLI_HUMAN_MOUSE_SPEED_MIN=400      # pixels/second
+export OPENCLI_HUMAN_MOUSE_SPEED_MAX=800
+export OPENCLI_HUMAN_MOUSE_JITTER=1.5         # jitter range (±px)
+export OPENCLI_HUMAN_MOUSE_OVERSHOOT_PROB=0.2 # overshoot probability
+
+# Keyboard settings
+export OPENCLI_HUMAN_TYPO_PROB=0.03           # typo probability
+export OPENCLI_HUMAN_KEY_DELAY_MIN=30         # ms per key
+export OPENCLI_HUMAN_KEY_DELAY_MAX=100
+
+# Scroll settings
+export OPENCLI_HUMAN_SCROLL_STEP_MIN=300      # px per scroll
+export OPENCLI_HUMAN_SCROLL_STEP_MAX=800
+export OPENCLI_HUMAN_SCROLL_PAUSE_MIN=500     # ms reading pause
+export OPENCLI_HUMAN_SCROLL_PAUSE_MAX=2500
+```
+
+### Usage Example
+```bash
+# Enable human mode for sensitive sites
+export OPENCLI_CDP_ENDPOINT="http://localhost:9222"
+export OPENCLI_HUMAN_MODE=true
+
+# Run with human-like behavior
+opencli browser click "登录按钮"   # curved trajectory, hover, natural click
+opencli browser type "密码框" "password123"  # variable speed, may make typos
+```
 
 ## Direct CDP Mode (No Extension)
 

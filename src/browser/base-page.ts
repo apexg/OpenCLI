@@ -7,6 +7,8 @@
  *
  * Subclasses implement the transport-specific methods: goto, evaluate,
  * getCookies, screenshot, tabs, etc.
+ *
+ * Human-like behavior is supported via OPENCLI_HUMAN_MODE=true.
  */
 
 import type { BrowserCookie, IPage, ScreenshotOptions, SnapshotOptions, WaitOptions } from '../types.js';
@@ -30,6 +32,7 @@ import {
   type TargetMatchLevel,
 } from './target-resolver.js';
 import { TargetError, type TargetErrorCode } from './target-errors.js';
+import { isHumanModeEnabled, getHumanConfig, randomIntInRange, randomInRange } from './human.js';
 
 export interface ResolveSuccess {
   matches_n: number;
@@ -101,13 +104,48 @@ export abstract class BasePage implements IPage {
   abstract tabs(): Promise<unknown[]>;
   abstract selectTab(target: number | string): Promise<void>;
 
+  // ── Human-like input methods (optional, implemented by subclasses) ──
+
+  /** Human-like click: trajectory + overshoot + jitter. Override in subclasses with CDP support. */
+  smartClick?(x: number, y: number): Promise<void>;
+
+  /** Human-like typing: variable speed + typo simulation. Override in subclasses with CDP support. */
+  smartType?(text: string): Promise<void>;
+
+  /** Human-like mouse movement. Override in subclasses with CDP support. */
+  humanMove?(x: number, y: number): Promise<void>;
+
   // ── Shared DOM helper implementations ──
 
   async click(ref: string, opts: ResolveOptions = {}): Promise<ResolveSuccess> {
     // Phase 1: Resolve target with fingerprint verification
     const resolved = await runResolve(this, ref, opts);
 
-    // Phase 2: Execute click on resolved element
+    // Phase 2: Check human mode for native click
+    if (isHumanModeEnabled() && typeof this.smartClick === 'function') {
+      // Get element coordinates for human-like click
+      const coords = await this.evaluate(`
+        (() => {
+          const el = window.__resolved;
+          if (!el) return null;
+          el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          const rect = el.getBoundingClientRect();
+          return {
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2),
+            w: Math.round(rect.width),
+            h: Math.round(rect.height),
+          };
+        })()
+      `) as { x: number; y: number } | null;
+
+      if (coords && coords.x != null && coords.y != null) {
+        await this.smartClick(coords.x, coords.y);
+        return resolved;
+      }
+    }
+
+    // Phase 3: Execute DOM click on resolved element (fallback or non-human mode)
     const result = await this.evaluate(clickResolvedJs()) as
       | string
       | { status: string; x?: number; y?: number; w?: number; h?: number; error?: string }
@@ -133,6 +171,41 @@ export abstract class BasePage implements IPage {
 
   async typeText(ref: string, text: string, opts: ResolveOptions = {}): Promise<ResolveSuccess> {
     const resolved = await runResolve(this, ref, opts);
+
+    // Human mode: focus element then type with smartType
+    if (isHumanModeEnabled() && typeof this.smartType === 'function') {
+      // Focus the element first
+      await this.evaluate(`
+        (() => {
+          const el = window.__resolved;
+          if (!el) return false;
+          el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          el.focus();
+          // Clear existing content if it's an input/textarea/contenteditable
+          if (el.isContentEditable) {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand('delete', false);
+          } else if (el.value !== undefined) {
+            const proto = el instanceof HTMLTextAreaElement
+              ? HTMLTextAreaElement.prototype
+              : HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (nativeSetter) nativeSetter.call(el, '');
+            else el.value = '';
+          }
+          return true;
+        })()
+      `);
+      // Type with human-like behavior
+      await this.smartType(text);
+      return resolved;
+    }
+
+    // Standard DOM type
     await this.evaluate(typeResolvedJs(text));
     return resolved;
   }
@@ -157,7 +230,29 @@ export abstract class BasePage implements IPage {
   }
 
   async scroll(direction: string = 'down', amount: number = 500): Promise<void> {
+    // In human mode, use human-like scrolling behavior
+    if (isHumanModeEnabled() && direction === 'down') {
+      const cfg = getHumanConfig();
+      const scrollAmount = amount ?? randomIntInRange(cfg.scrollStepMinPx, cfg.scrollStepMaxPx);
+
+      // Delegate to subclass for CDP wheel event
+      await this._humanScrollWheel(scrollAmount);
+
+      // Reading pause
+      await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.scrollPauseMinMs, cfg.scrollPauseMaxMs)));
+      return;
+    }
+
+    // Standard scroll via JS evaluate
     await this.evaluate(scrollJs(direction, amount));
+  }
+
+  /**
+   * Human-like scroll wheel event. Subclasses with CDP access override this.
+   * Base implementation falls back to JS scroll.
+   */
+  protected async _humanScrollWheel(deltaY: number): Promise<void> {
+    await this.evaluate(`window.scrollBy(0, ${deltaY})`);
   }
 
   async autoScroll(options?: { times?: number; delayMs?: number }): Promise<void> {
