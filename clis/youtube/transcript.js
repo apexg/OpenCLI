@@ -10,7 +10,7 @@
  *   --mode raw: every caption segment as-is with precise timestamps
  */
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { parseVideoId, prepareYoutubeApiPage } from './utils.js';
+import { parseVideoId } from './utils.js';
 import { groupTranscriptSegments, formatGroupedTranscript, } from './transcript-group.js';
 import { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 cli({
@@ -28,9 +28,12 @@ cli({
     // so we let the renderer auto-detect columns from the data keys.
     func: async (page, kwargs) => {
         const videoId = parseVideoId(kwargs.url);
-        await prepareYoutubeApiPage(page);
         const lang = kwargs.lang || '';
         const mode = kwargs.mode || 'grouped';
+
+        // Navigate to video page to get ytInitialPlayerResponse with caption data
+        await page.goto(`https://www.youtube.com/watch?v=${videoId}`, { waitUntil: 'domcontentloaded' });
+        await page.wait(2);
 
         // Step 1: Try page initial data first (works when logged in)
         // Then fallback to Android InnerTube API (works without login on some IPs)
