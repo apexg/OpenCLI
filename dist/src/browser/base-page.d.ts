@@ -7,6 +7,8 @@
  *
  * Subclasses implement the transport-specific methods: goto, evaluate,
  * getCookies, screenshot, tabs, etc.
+ *
+ * Human-like behavior is supported via OPENCLI_HUMAN_MODE=true.
  */
 import type { BrowserCookie, IPage, ScreenshotOptions, SnapshotOptions, WaitOptions } from '../types.js';
 import { type ResolveOptions, type TargetMatchLevel } from './target-resolver.js';
@@ -44,6 +46,12 @@ export declare abstract class BasePage implements IPage {
     abstract screenshot(options?: ScreenshotOptions): Promise<string>;
     abstract tabs(): Promise<unknown[]>;
     abstract selectTab(target: number | string): Promise<void>;
+    /** Human-like click: trajectory + overshoot + jitter. Override in subclasses with CDP support. */
+    smartClick?(x: number, y: number): Promise<void>;
+    /** Human-like typing: variable speed + typo simulation. Override in subclasses with CDP support. */
+    smartType?(text: string): Promise<void>;
+    /** Human-like mouse movement. Override in subclasses with CDP support. */
+    humanMove?(x: number, y: number): Promise<void>;
     click(ref: string, opts?: ResolveOptions): Promise<ResolveSuccess>;
     /** Override in subclasses with CDP native click support */
     protected tryNativeClick(_x: number, _y: number): Promise<boolean>;
@@ -52,6 +60,11 @@ export declare abstract class BasePage implements IPage {
     scrollTo(ref: string, opts?: ResolveOptions): Promise<unknown>;
     getFormState(): Promise<Record<string, unknown>>;
     scroll(direction?: string, amount?: number): Promise<void>;
+    /**
+     * Human-like scroll wheel event. Subclasses with CDP access override this.
+     * Base implementation falls back to JS scroll.
+     */
+    protected _humanScrollWheel(deltaY: number): Promise<void>;
     autoScroll(options?: {
         times?: number;
         delayMs?: number;

@@ -7,9 +7,12 @@
  * IMPORTANT: After goto(), we remember the page identity (targetId) returned
  * by the navigate action and pass it to all subsequent commands. This ensures
  * page-scoped operations target the correct page without guessing.
+ *
+ * Human-like behavior is supported via OPENCLI_HUMAN_MODE=true.
  */
 import type { BrowserCookie, ScreenshotOptions } from '../types.js';
 import { BasePage } from './base-page.js';
+import { type HumanConfig } from './human.js';
 /**
  * Page — implements IPage by talking to the daemon via HTTP.
  */
@@ -73,4 +76,32 @@ export declare class Page extends BasePage {
     nativeClick(x: number, y: number): Promise<void>;
     nativeType(text: string): Promise<void>;
     nativeKeyPress(key: string, modifiers?: string[]): Promise<void>;
+    /**
+     * Human-like mouse movement with Bezier curve trajectory.
+     */
+    humanMove(x: number, y: number): Promise<void>;
+    /**
+     * Human-like click with trajectory and natural press duration.
+     */
+    humanClick(x: number, y: number): Promise<void>;
+    /**
+     * Human-like typing with variable speed and typo simulation.
+     */
+    humanType(text: string): Promise<void>;
+    /**
+     * Human-like scroll wheel event.
+     */
+    protected _humanScrollWheel(deltaY: number): Promise<void>;
+    /**
+     * Smart click: uses human mode if enabled.
+     */
+    smartClick(x: number, y: number): Promise<void>;
+    /**
+     * Smart type: uses human mode if enabled.
+     */
+    smartType(text: string): Promise<void>;
+    /**
+     * Set human config overrides.
+     */
+    setHumanConfig(cfg: Partial<HumanConfig>): void;
 }

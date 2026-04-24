@@ -12,3 +12,4 @@ export type { DaemonHealth } from './daemon-client.js';
 export { generateSnapshotJs, scrollToRefJs, getFormStateJs } from './dom-snapshot.js';
 export { generateStealthJs } from './stealth.js';
 export type { DomSnapshotOptions } from './dom-snapshot.js';
+export { isHumanModeEnabled, getHumanConfig, DEFAULT_HUMAN_CONFIG, randomInRange, randomIntInRange, easeInOut, generateBezierCurve, generateOvershootCurve, getAdjacentKey, ADJACENT_KEYS, type HumanConfig, } from './human.js';

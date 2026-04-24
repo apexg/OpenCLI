@@ -7,6 +7,8 @@
  * IMPORTANT: After goto(), we remember the page identity (targetId) returned
  * by the navigate action and pass it to all subsequent commands. This ensures
  * page-scoped operations target the correct page without guessing.
+ *
+ * Human-like behavior is supported via OPENCLI_HUMAN_MODE=true.
  */
 import { sendCommand, sendCommandFull } from './daemon-client.js';
 import { wrapForEval } from './utils.js';
@@ -16,6 +18,7 @@ import { waitForDomStableJs } from './dom-helpers.js';
 import { BasePage } from './base-page.js';
 import { classifyBrowserError } from './errors.js';
 import { log } from '../logger.js';
+import { isHumanModeEnabled, getHumanConfig, randomIntInRange, randomInRange } from './human.js';
 function isUnsupportedNetworkCaptureError(err) {
     const message = err instanceof Error ? err.message : String(err);
     const normalized = message.toLowerCase();
@@ -383,5 +386,149 @@ export class Page extends BasePage {
             key,
             modifiers: modifierFlags,
         });
+    }
+    // ─── Human-like input methods (passthrough via CDP) ────────────────────────
+    /**
+     * Human-like mouse movement with Bezier curve trajectory.
+     */
+    async humanMove(x, y) {
+        const cfg = getHumanConfig();
+        // Get current mouse position (tracked via JS)
+        const currentPos = await this.evaluate(`
+      (() => ({ x: window.__opencli_mouseX || 0, y: window.__opencli_mouseY || 0 }))()
+    `);
+        const startX = currentPos?.x ?? 0;
+        const startY = currentPos?.y ?? 0;
+        const distance = Math.sqrt(Math.pow(x - startX, 2) + Math.pow(y - startY, 2));
+        // For short distances, just move
+        if (distance < 5) {
+            await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+            await this.evaluate(`window.__opencli_mouseX = ${x}; window.__opencli_mouseY = ${y}`);
+            return;
+        }
+        // Generate Bezier trajectory in JS and move point-by-point
+        const steps = Math.max(cfg.mouseBezierStepsMin, Math.min(cfg.mouseBezierStepsMax, Math.floor(distance / 5)));
+        // We need to generate the trajectory and send mouse events
+        // For daemon-backed Page, we generate points locally and send CDP commands
+        const { generateBezierCurve, generateOvershootCurve, easeInOut } = await import('./human.js');
+        let points = generateBezierCurve(startX, startY, x, y, steps, cfg.mouseJitterRange);
+        // Overshoot
+        if (Math.random() < cfg.mouseOvershootProbability) {
+            const overshootFactor = randomInRange(cfg.mouseOvershootFactorMin, cfg.mouseOvershootFactorMax);
+            const overshootPoints = generateOvershootCurve(x, y, startX, startY, overshootFactor, 15, cfg.mouseJitterRange);
+            points = points.concat(overshootPoints);
+        }
+        const duration = distance / randomInRange(cfg.mouseSpeedMin, cfg.mouseSpeedMax);
+        const totalPoints = points.length;
+        for (let i = 0; i < totalPoints; i++) {
+            const point = points[i];
+            const t = i / totalPoints;
+            const speedFactor = easeInOut(t);
+            const baseDelay = duration / totalPoints;
+            const delay = baseDelay / (speedFactor + 0.3) + randomInRange(-0.002, 0.005);
+            await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+            await this.evaluate(`window.__opencli_mouseX = ${point.x}; window.__opencli_mouseY = ${point.y}`);
+            if (delay > 0) {
+                await new Promise(resolve => setTimeout(resolve, delay * 1000));
+            }
+        }
+        // Final position
+        await this.evaluate(`window.__opencli_mouseX = ${x}; window.__opencli_mouseY = ${y}`);
+    }
+    /**
+     * Human-like click with trajectory and natural press duration.
+     */
+    async humanClick(x, y) {
+        const cfg = getHumanConfig();
+        const actualX = x + randomInRange(-cfg.mouseClickJitterPx, cfg.mouseClickJitterPx);
+        const actualY = y + randomInRange(-cfg.mouseClickJitterPx, cfg.mouseClickJitterPx);
+        await this.humanMove(actualX, actualY);
+        await new Promise(resolve => setTimeout(resolve, randomInRange(50, 150)));
+        const pressDuration = randomInRange(cfg.mouseClickDelayMinMs, cfg.mouseClickDelayMaxMs);
+        await this.cdp('Input.dispatchMouseEvent', {
+            type: 'mousePressed', x: actualX, y: actualY, button: 'left', clickCount: 1,
+        });
+        await new Promise(resolve => setTimeout(resolve, pressDuration));
+        await this.cdp('Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: actualX, y: actualY, button: 'left', clickCount: 1,
+        });
+        await new Promise(resolve => setTimeout(resolve, randomInRange(50, 150)));
+    }
+    /**
+     * Human-like typing with variable speed and typo simulation.
+     */
+    async humanType(text) {
+        const cfg = getHumanConfig();
+        const { getAdjacentKey } = await import('./human.js');
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+            // Typo simulation
+            if (Math.random() < cfg.keyTypoProbability) {
+                const wrongChar = getAdjacentKey(char);
+                if (wrongChar) {
+                    await this.nativeType(wrongChar);
+                    await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.keyTypoDelayMinMs, cfg.keyTypoDelayMaxMs)));
+                    await this.nativeKeyPress('Backspace');
+                    await new Promise(resolve => setTimeout(resolve, randomInRange(100, 250)));
+                }
+            }
+            // Correct character
+            if (char === ' ') {
+                await this.nativeKeyPress('Space');
+            }
+            else if (char === '\n') {
+                await this.nativeKeyPress('Enter');
+            }
+            else if (char === '\t') {
+                await this.nativeKeyPress('Tab');
+            }
+            else {
+                await this.nativeType(char);
+            }
+            // Thinking pause
+            const shouldPause = i > 0 && i % cfg.keyTypoPauseWordCount === 0 && Math.random() < cfg.keyTypoPauseProbability;
+            if (shouldPause) {
+                await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.keyThinkingPauseMinMs, cfg.keyThinkingPauseMaxMs)));
+            }
+            else {
+                await new Promise(resolve => setTimeout(resolve, randomIntInRange(cfg.keyDelayMinMs, cfg.keyDelayMaxMs)));
+            }
+        }
+    }
+    /**
+     * Human-like scroll wheel event.
+     */
+    async _humanScrollWheel(deltaY) {
+        await this.cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', deltaX: 0, deltaY });
+    }
+    /**
+     * Smart click: uses human mode if enabled.
+     */
+    async smartClick(x, y) {
+        if (isHumanModeEnabled()) {
+            await this.humanClick(x, y);
+        }
+        else {
+            await this.nativeClick(x, y);
+        }
+    }
+    /**
+     * Smart type: uses human mode if enabled.
+     */
+    async smartType(text) {
+        if (isHumanModeEnabled()) {
+            await this.humanType(text);
+        }
+        else {
+            await this.nativeType(text);
+        }
+    }
+    /**
+     * Set human config overrides.
+     */
+    setHumanConfig(cfg) {
+        // Page doesn't have internal config state like CDPPage
+        // Config is read from environment each call
+        log.warn('setHumanConfig on Page is not supported; use environment variables');
     }
 }

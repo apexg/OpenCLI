@@ -7,11 +7,14 @@
  *
  * Subclasses implement the transport-specific methods: goto, evaluate,
  * getCookies, screenshot, tabs, etc.
+ *
+ * Human-like behavior is supported via OPENCLI_HUMAN_MODE=true.
  */
 import { generateSnapshotJs, getFormStateJs } from './dom-snapshot.js';
 import { pressKeyJs, waitForTextJs, waitForCaptureJs, waitForSelectorJs, scrollJs, autoScrollJs, networkRequestsJs, waitForDomStableJs, } from './dom-helpers.js';
 import { resolveTargetJs, clickResolvedJs, typeResolvedJs, scrollResolvedJs, } from './target-resolver.js';
 import { TargetError } from './target-errors.js';
+import { isHumanModeEnabled, getHumanConfig, randomIntInRange, randomInRange } from './human.js';
 /**
  * Execute `resolveTargetJs` once, throw structured `TargetError` on failure.
  * Single helper so click/typeText/scrollTo share one resolution pathway,
@@ -58,7 +61,29 @@ export class BasePage {
     async click(ref, opts = {}) {
         // Phase 1: Resolve target with fingerprint verification
         const resolved = await runResolve(this, ref, opts);
-        // Phase 2: Execute click on resolved element
+        // Phase 2: Check human mode for native click
+        if (isHumanModeEnabled() && typeof this.smartClick === 'function') {
+            // Get element coordinates for human-like click
+            const coords = await this.evaluate(`
+        (() => {
+          const el = window.__resolved;
+          if (!el) return null;
+          el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          const rect = el.getBoundingClientRect();
+          return {
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2),
+            w: Math.round(rect.width),
+            h: Math.round(rect.height),
+          };
+        })()
+      `);
+            if (coords && coords.x != null && coords.y != null) {
+                await this.smartClick(coords.x, coords.y);
+                return resolved;
+            }
+        }
+        // Phase 3: Execute DOM click on resolved element (fallback or non-human mode)
         const result = await this.evaluate(clickResolvedJs());
         if (typeof result === 'string' || result == null)
             return resolved;
@@ -78,6 +103,39 @@ export class BasePage {
     }
     async typeText(ref, text, opts = {}) {
         const resolved = await runResolve(this, ref, opts);
+        // Human mode: focus element then type with smartType
+        if (isHumanModeEnabled() && typeof this.smartType === 'function') {
+            // Focus the element first
+            await this.evaluate(`
+        (() => {
+          const el = window.__resolved;
+          if (!el) return false;
+          el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          el.focus();
+          // Clear existing content if it's an input/textarea/contenteditable
+          if (el.isContentEditable) {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand('delete', false);
+          } else if (el.value !== undefined) {
+            const proto = el instanceof HTMLTextAreaElement
+              ? HTMLTextAreaElement.prototype
+              : HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (nativeSetter) nativeSetter.call(el, '');
+            else el.value = '';
+          }
+          return true;
+        })()
+      `);
+            // Type with human-like behavior
+            await this.smartType(text);
+            return resolved;
+        }
+        // Standard DOM type
         await this.evaluate(typeResolvedJs(text));
         return resolved;
     }
@@ -98,7 +156,25 @@ export class BasePage {
         return (await this.evaluate(getFormStateJs()));
     }
     async scroll(direction = 'down', amount = 500) {
+        // In human mode, use human-like scrolling behavior
+        if (isHumanModeEnabled() && direction === 'down') {
+            const cfg = getHumanConfig();
+            const scrollAmount = amount ?? randomIntInRange(cfg.scrollStepMinPx, cfg.scrollStepMaxPx);
+            // Delegate to subclass for CDP wheel event
+            await this._humanScrollWheel(scrollAmount);
+            // Reading pause
+            await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.scrollPauseMinMs, cfg.scrollPauseMaxMs)));
+            return;
+        }
+        // Standard scroll via JS evaluate
         await this.evaluate(scrollJs(direction, amount));
+    }
+    /**
+     * Human-like scroll wheel event. Subclasses with CDP access override this.
+     * Base implementation falls back to JS scroll.
+     */
+    async _humanScrollWheel(deltaY) {
+        await this.evaluate(`window.scrollBy(0, ${deltaY})`);
     }
     async autoScroll(options) {
         const times = options?.times ?? 3;

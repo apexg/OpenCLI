@@ -16,6 +16,7 @@ import { waitForDomStableJs } from './dom-helpers.js';
 import { isRecord, saveBase64ToFile } from '../utils.js';
 import { getAllElectronApps } from '../electron-apps.js';
 import { BasePage } from './base-page.js';
+import { isHumanModeEnabled, getHumanConfig, randomInRange, randomIntInRange, easeInOut, generateBezierCurve, generateOvershootCurve, getAdjacentKey, } from './human.js';
 const CDP_SEND_TIMEOUT = 30_000;
 // Memory guard for in-process capture. The 4k cap we used to apply everywhere
 // silently truncated JSON so `JSON.parse` failed or gave partial objects — the
@@ -157,6 +158,10 @@ class CDPPage extends BasePage {
     _pageEnabled = false;
     _currentTargetId; // Current page identity for setActivePage/getActivePage
     _frameContexts = new Map(); // frameId → executionContextId
+    // Human-like behavior state
+    _mouseX = 0;
+    _mouseY = 0;
+    _humanConfig = null;
     // Network capture state (mirrors extension/src/cdp.ts NetworkCaptureEntry shape)
     _networkCapturing = false;
     _networkCapturePattern = '';
@@ -425,6 +430,290 @@ class CDPPage extends BasePage {
             button: 'left',
             clickCount: 1,
         });
+    }
+    // ─── Human-like input methods ─────────────────────────────────────────────
+    /**
+     * Human-like mouse movement with Bezier curve trajectory.
+     * Simulates natural mouse movement: curves, variable speed, overshoot, jitter.
+     */
+    async humanMove(x, y) {
+        const cfg = this._humanConfig ?? getHumanConfig();
+        const distance = Math.sqrt(Math.pow(x - this._mouseX, 2) + Math.pow(y - this._mouseY, 2));
+        // For very short distances, just move directly
+        if (distance < 5) {
+            await this.bridge.send('Input.dispatchMouseEvent', {
+                type: 'mouseMoved',
+                x, y,
+            });
+            this._mouseX = x;
+            this._mouseY = y;
+            return;
+        }
+        // Calculate steps based on distance
+        const steps = Math.max(cfg.mouseBezierStepsMin, Math.min(cfg.mouseBezierStepsMax, Math.floor(distance / 5)));
+        // Generate Bezier curve trajectory
+        let points = generateBezierCurve(this._mouseX, this._mouseY, x, y, steps, cfg.mouseJitterRange);
+        // Overshoot logic: sometimes overshoot and correct back
+        if (Math.random() < cfg.mouseOvershootProbability) {
+            const overshootFactor = randomInRange(cfg.mouseOvershootFactorMin, cfg.mouseOvershootFactorMax);
+            const overshootPoints = generateOvershootCurve(x, y, this._mouseX, this._mouseY, overshootFactor, 15, cfg.mouseJitterRange);
+            points = points.concat(overshootPoints);
+        }
+        // Calculate duration based on speed
+        const duration = distance / randomInRange(cfg.mouseSpeedMin, cfg.mouseSpeedMax);
+        const totalPoints = points.length;
+        // Move along trajectory with ease-in-out speed
+        for (let i = 0; i < totalPoints; i++) {
+            const point = points[i];
+            const t = i / totalPoints;
+            const speedFactor = easeInOut(t);
+            const baseDelay = duration / totalPoints;
+            const delay = baseDelay / (speedFactor + 0.3) + randomInRange(-0.002, 0.005);
+            await this.bridge.send('Input.dispatchMouseEvent', {
+                type: 'mouseMoved',
+                x: point.x,
+                y: point.y,
+            });
+            this._mouseX = point.x;
+            this._mouseY = point.y;
+            // Small delay between points (convert seconds to ms)
+            if (delay > 0) {
+                await new Promise(resolve => setTimeout(resolve, delay * 1000));
+            }
+        }
+        // Ensure we end at exact target
+        this._mouseX = x;
+        this._mouseY = y;
+    }
+    /**
+     * Human-like click with trajectory movement, jitter, and natural press duration.
+     */
+    async humanClick(x, y) {
+        const cfg = this._humanConfig ?? getHumanConfig();
+        // Add jitter to click position (don't always click exact center)
+        const actualX = x + randomInRange(-cfg.mouseClickJitterPx, cfg.mouseClickJitterPx);
+        const actualY = y + randomInRange(-cfg.mouseClickJitterPx, cfg.mouseClickJitterPx);
+        // Move to target with human trajectory
+        await this.humanMove(actualX, actualY);
+        // Small hover delay before clicking
+        await new Promise(resolve => setTimeout(resolve, randomInRange(50, 150)));
+        // Press with natural duration (human takes 50-150ms between down/up)
+        const pressDuration = randomInRange(cfg.mouseClickDelayMinMs, cfg.mouseClickDelayMaxMs);
+        await this.bridge.send('Input.dispatchMouseEvent', {
+            type: 'mousePressed',
+            x: actualX,
+            y: actualY,
+            button: 'left',
+            clickCount: 1,
+        });
+        await new Promise(resolve => setTimeout(resolve, pressDuration));
+        await this.bridge.send('Input.dispatchMouseEvent', {
+            type: 'mouseReleased',
+            x: actualX,
+            y: actualY,
+            button: 'left',
+            clickCount: 1,
+        });
+        // Small delay after click
+        await new Promise(resolve => setTimeout(resolve, randomInRange(50, 150)));
+    }
+    /**
+     * Human-like typing with variable speed, typo simulation, and thinking pauses.
+     * Uses Input.dispatchKeyEvent for individual characters (not Input.insertText).
+     */
+    async humanType(text) {
+        const cfg = this._humanConfig ?? getHumanConfig();
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+            // Typo simulation: press adjacent key and correct
+            if (Math.random() < cfg.keyTypoProbability) {
+                const wrongChar = getAdjacentKey(char);
+                if (wrongChar) {
+                    // Press wrong key
+                    await this._dispatchKeyChar(wrongChar);
+                    await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.keyTypoDelayMinMs, cfg.keyTypoDelayMaxMs)));
+                    // Press Backspace to correct
+                    await this.bridge.send('Input.dispatchKeyEvent', {
+                        type: 'keyDown',
+                        key: 'Backspace',
+                        code: 'Backspace',
+                    });
+                    await new Promise(resolve => setTimeout(resolve, randomInRange(80, 150)));
+                    await this.bridge.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        key: 'Backspace',
+                        code: 'Backspace',
+                    });
+                    await new Promise(resolve => setTimeout(resolve, randomInRange(100, 250)));
+                }
+            }
+            // Press correct character
+            await this._dispatchKeyChar(char);
+            // Thinking pause simulation (every N chars, may pause longer)
+            const shouldPause = i > 0 && i % cfg.keyTypoPauseWordCount === 0 && Math.random() < cfg.keyTypoPauseProbability;
+            if (shouldPause) {
+                await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.keyThinkingPauseMinMs, cfg.keyThinkingPauseMaxMs)));
+            }
+            else {
+                // Normal key delay
+                await new Promise(resolve => setTimeout(resolve, randomIntInRange(cfg.keyDelayMinMs, cfg.keyDelayMaxMs)));
+            }
+        }
+    }
+    /**
+     * Dispatch a single character key event.
+     */
+    async _dispatchKeyChar(char) {
+        // Handle special characters
+        if (char === ' ') {
+            await this.bridge.send('Input.dispatchKeyEvent', {
+                type: 'keyDown',
+                key: ' ',
+                code: 'Space',
+            });
+            await this.bridge.send('Input.dispatchKeyEvent', {
+                type: 'keyUp',
+                key: ' ',
+                code: 'Space',
+            });
+            return;
+        }
+        if (char === '\n' || char === '\r') {
+            await this.bridge.send('Input.dispatchKeyEvent', {
+                type: 'keyDown',
+                key: 'Enter',
+                code: 'Enter',
+            });
+            await this.bridge.send('Input.dispatchKeyEvent', {
+                type: 'keyUp',
+                key: 'Enter',
+                code: 'Enter',
+            });
+            return;
+        }
+        if (char === '\t') {
+            await this.bridge.send('Input.dispatchKeyEvent', {
+                type: 'keyDown',
+                key: 'Tab',
+                code: 'Tab',
+            });
+            await this.bridge.send('Input.dispatchKeyEvent', {
+                type: 'keyUp',
+                key: 'Tab',
+                code: 'Tab',
+            });
+            return;
+        }
+        // Regular character - use insertText for reliability (handles Unicode/CJK)
+        // For human-like typing, we still want individual character insertion
+        await this.bridge.send('Input.insertText', { text: char });
+    }
+    /**
+     * Human-like scroll with non-linear steps, reading pauses, and backtrack behavior.
+     */
+    async humanScrollDown(pixels) {
+        const cfg = this._humanConfig ?? getHumanConfig();
+        const targetPixels = pixels ?? randomIntInRange(cfg.scrollStepMinPx, cfg.scrollStepMaxPx);
+        // Backtrack simulation: 10% chance to scroll back a bit first (looking back)
+        if (Math.random() < cfg.scrollBacktrackProbability) {
+            const backtrack = randomIntInRange(cfg.scrollBacktrackMinPx, cfg.scrollBacktrackMaxPx);
+            await this.bridge.send('Input.dispatchMouseEvent', {
+                type: 'mouseWheel',
+                deltaX: 0,
+                deltaY: -backtrack, // Negative = scroll up/back
+            });
+            await new Promise(resolve => setTimeout(resolve, randomInRange(100, 300)));
+        }
+        // Scroll down
+        await this.bridge.send('Input.dispatchMouseEvent', {
+            type: 'mouseWheel',
+            deltaX: 0,
+            deltaY: targetPixels,
+        });
+        // Reading pause
+        await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.scrollPauseMinMs, cfg.scrollPauseMaxMs)));
+    }
+    /**
+     * Human-like scroll to bottom of page with iterative scrolling and pauses.
+     */
+    async humanScrollToBottom(maxIterations = 100) {
+        const cfg = this._humanConfig ?? getHumanConfig();
+        let iterations = 0;
+        // Get initial scroll position
+        const initialScroll = await this.evaluate(`
+      (() => ({
+        scrollHeight: document.body.scrollHeight,
+        scrollTop: document.documentElement.scrollTop || document.body.scrollTop,
+        clientHeight: document.documentElement.clientHeight || document.body.clientHeight
+      }))()
+    `);
+        if (!initialScroll)
+            return 0;
+        let { scrollHeight, scrollTop, clientHeight } = initialScroll;
+        while (scrollTop + clientHeight < scrollHeight - 50 && iterations < maxIterations) {
+            iterations++;
+            const scrollStep = randomIntInRange(cfg.scrollStepMinPx, cfg.scrollStepMaxPx);
+            // Backtrack chance
+            if (Math.random() < cfg.scrollBacktrackProbability) {
+                const backtrack = randomIntInRange(cfg.scrollBacktrackMinPx, cfg.scrollBacktrackMaxPx);
+                await this.bridge.send('Input.dispatchMouseEvent', {
+                    type: 'mouseWheel',
+                    deltaX: 0,
+                    deltaY: -backtrack,
+                });
+                await new Promise(resolve => setTimeout(resolve, randomInRange(100, 300)));
+            }
+            // Scroll down
+            await this.bridge.send('Input.dispatchMouseEvent', {
+                type: 'mouseWheel',
+                deltaX: 0,
+                deltaY: scrollStep,
+            });
+            // Reading pause
+            await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.scrollPauseMinMs, cfg.scrollPauseMaxMs)));
+            // Update scroll state
+            const state = await this.evaluate(`
+        (() => ({
+          scrollHeight: document.body.scrollHeight,
+          scrollTop: document.documentElement.scrollTop || document.body.scrollTop,
+          clientHeight: document.documentElement.clientHeight || document.body.clientHeight
+        }))()
+      `);
+            if (state) {
+                scrollHeight = state.scrollHeight;
+                scrollTop = state.scrollTop;
+                clientHeight = state.clientHeight;
+            }
+        }
+        return iterations;
+    }
+    /**
+     * Set human behavior configuration (overrides environment defaults).
+     */
+    setHumanConfig(cfg) {
+        this._humanConfig = { ...getHumanConfig(), ...cfg };
+    }
+    /**
+     * Smart click: uses human mode if enabled, otherwise native click.
+     */
+    async smartClick(x, y) {
+        if (isHumanModeEnabled()) {
+            await this.humanClick(x, y);
+        }
+        else {
+            await this.nativeClick(x, y);
+        }
+    }
+    /**
+     * Smart type: uses human mode if enabled, otherwise instant insert.
+     */
+    async smartType(text) {
+        if (isHumanModeEnabled()) {
+            await this.humanType(text);
+        }
+        else {
+            await this.nativeType(text);
+        }
     }
     /** Precise text insertion using CDP Input.insertText (handles Unicode/CJK) */
     async nativeType(text) {
