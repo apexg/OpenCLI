@@ -31,55 +31,87 @@ cli({
         await prepareYoutubeApiPage(page);
         const lang = kwargs.lang || '';
         const mode = kwargs.mode || 'grouped';
-        // Step 1: Get caption track URL via Android InnerTube API
-        const captionData = await page.evaluate(`
-      (async () => {
-        const cfg = window.ytcfg?.data_ || {};
-        const apiKey = cfg.INNERTUBE_API_KEY;
-        if (!apiKey) return { error: 'INNERTUBE_API_KEY not found on page' };
 
-        const resp = await fetch('/youtubei/v1/player?key=' + apiKey + '&prettyPrint=false', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
-            videoId: ${JSON.stringify(videoId)}
-          })
-        });
+        // Step 1: Try page initial data first (works when logged in)
+        // Then fallback to Android InnerTube API (works without login on some IPs)
+        let captionData = await page.evaluate(`
+          (async () => {
+            const langPref = ${JSON.stringify(lang)};
 
-        if (!resp.ok) return { error: 'InnerTube player API returned HTTP ' + resp.status };
-        const data = await resp.json();
+            // Try ytInitialPlayerResponse first (page data already loaded)
+            const initialData = window.ytInitialPlayerResponse;
+            if (initialData?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length) {
+              const tracks = initialData.captions.playerCaptionsTracklistRenderer.captionTracks;
+              const available = tracks.map(t => t.languageCode + (t.kind === 'asr' ? ' (auto)' : ''));
 
-        const renderer = data.captions?.playerCaptionsTracklistRenderer;
-        if (!renderer?.captionTracks?.length) {
-          return { error: 'No captions available for this video' };
-        }
+              let track = null;
+              if (langPref) {
+                track = tracks.find(t => t.languageCode === langPref)
+                  || tracks.find(t => t.languageCode.startsWith(langPref));
+              }
+              if (!track) {
+                track = tracks.find(t => t.kind !== 'asr') || tracks[0];
+              }
 
-        const tracks = renderer.captionTracks;
-        const available = tracks.map(t => t.languageCode + (t.kind === 'asr' ? ' (auto)' : ''));
+              return {
+                captionUrl: track.baseUrl,
+                language: track.languageCode,
+                kind: track.kind || 'manual',
+                available,
+                requestedLang: langPref || null,
+                langMatched: !!(langPref && track.languageCode === langPref),
+                langPrefixMatched: !!(langPref && track.languageCode !== langPref && track.languageCode.startsWith(langPref)),
+                source: 'initial'
+              };
+            }
 
-        const langPref = ${JSON.stringify(lang)};
-        let track = null;
-        if (langPref) {
-          track = tracks.find(t => t.languageCode === langPref)
-            || tracks.find(t => t.languageCode.startsWith(langPref));
-        }
-        if (!track) {
-          track = tracks.find(t => t.kind !== 'asr') || tracks[0];
-        }
+            // Fallback to Android InnerTube API
+            const cfg = window.ytcfg?.data_ || {};
+            const apiKey = cfg.INNERTUBE_API_KEY;
+            if (!apiKey) return { error: 'INNERTUBE_API_KEY not found on page' };
 
-        return {
-          captionUrl: track.baseUrl,
-          language: track.languageCode,
-          kind: track.kind || 'manual',
-          available,
-          requestedLang: langPref || null,
-          langMatched: !!(langPref && track.languageCode === langPref),
-          langPrefixMatched: !!(langPref && track.languageCode !== langPref && track.languageCode.startsWith(langPref))
-        };
-      })()
-    `);
+            const resp = await fetch('/youtubei/v1/player?key=' + apiKey + '&prettyPrint=false', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
+                videoId: ${JSON.stringify(videoId)}
+              })
+            });
+
+            if (!resp.ok) return { error: 'InnerTube player API returned HTTP ' + resp.status };
+            const data = await resp.json();
+
+            const renderer = data.captions?.playerCaptionsTracklistRenderer;
+            if (!renderer?.captionTracks?.length) {
+              return { error: 'No captions available for this video' };
+            }
+
+            const tracks = renderer.captionTracks;
+            const available = tracks.map(t => t.languageCode + (t.kind === 'asr' ? ' (auto)' : ''));
+
+            let track = null;
+            if (langPref) {
+              track = tracks.find(t => t.languageCode === langPref)
+                || tracks.find(t => t.languageCode.startsWith(langPref));
+            }
+            if (!track) {
+              track = tracks.find(t => t.kind !== 'asr') || tracks[0];
+            }
+
+            return {
+              captionUrl: track.baseUrl,
+              language: track.languageCode,
+              kind: track.kind || 'manual',
+              available,
+              requestedLang: langPref || null,
+              langMatched: !!(langPref && track.languageCode === langPref),
+              langPrefixMatched: !!(langPref && track.languageCode !== langPref && track.languageCode.startsWith(langPref)),
+              source: 'android_api'
+            };
+          })()
+        `);
         if (!captionData || typeof captionData === 'string') {
             throw new CommandExecutionError(`Failed to get caption info: ${typeof captionData === 'string' ? captionData : 'null response'}`);
         }
