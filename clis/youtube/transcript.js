@@ -31,44 +31,14 @@ cli({
         const lang = kwargs.lang || '';
         const mode = kwargs.mode || 'grouped';
 
-        // Navigate to video page to get ytInitialPlayerResponse with caption data
-        await page.goto(`https://www.youtube.com/watch?v=${videoId}`, { waitUntil: 'domcontentloaded' });
+        // Step 1: Try Android InnerTube API first (from homepage, works without PoToken)
+        // This is the preferred method - caption URLs from Android client don't need PoToken
+        await page.goto('https://www.youtube.com', { waitUntil: 'domcontentloaded' });
         await page.wait(2);
 
-        // Step 1: Try page initial data first (works when logged in)
-        // Then fallback to Android InnerTube API (works without login on some IPs)
         let captionData = await page.evaluate(`
           (async () => {
             const langPref = ${JSON.stringify(lang)};
-
-            // Try ytInitialPlayerResponse first (page data already loaded)
-            const initialData = window.ytInitialPlayerResponse;
-            if (initialData?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length) {
-              const tracks = initialData.captions.playerCaptionsTracklistRenderer.captionTracks;
-              const available = tracks.map(t => t.languageCode + (t.kind === 'asr' ? ' (auto)' : ''));
-
-              let track = null;
-              if (langPref) {
-                track = tracks.find(t => t.languageCode === langPref)
-                  || tracks.find(t => t.languageCode.startsWith(langPref));
-              }
-              if (!track) {
-                track = tracks.find(t => t.kind !== 'asr') || tracks[0];
-              }
-
-              return {
-                captionUrl: track.baseUrl,
-                language: track.languageCode,
-                kind: track.kind || 'manual',
-                available,
-                requestedLang: langPref || null,
-                langMatched: !!(langPref && track.languageCode === langPref),
-                langPrefixMatched: !!(langPref && track.languageCode !== langPref && track.languageCode.startsWith(langPref)),
-                source: 'initial'
-              };
-            }
-
-            // Fallback to Android InnerTube API
             const cfg = window.ytcfg?.data_ || {};
             const apiKey = cfg.INNERTUBE_API_KEY;
             if (!apiKey) return { error: 'INNERTUBE_API_KEY not found on page' };
@@ -85,6 +55,11 @@ cli({
 
             if (!resp.ok) return { error: 'InnerTube player API returned HTTP ' + resp.status };
             const data = await resp.json();
+
+            // Check if Android API is blocked
+            if (data.playabilityStatus?.status === 'LOGIN_REQUIRED') {
+              return { blocked: true, reason: data.playabilityStatus?.reason };
+            }
 
             const renderer = data.captions?.playerCaptionsTracklistRenderer;
             if (!renderer?.captionTracks?.length) {
@@ -115,8 +90,52 @@ cli({
             };
           })()
         `);
+
+        // Step 2: If Android API is blocked, fallback to video page's ytInitialPlayerResponse
+        if (captionData?.blocked) {
+            await page.goto(`https://www.youtube.com/watch?v=${videoId}`, { waitUntil: 'domcontentloaded' });
+            await page.wait(2);
+
+            captionData = await page.evaluate(`
+              (async () => {
+                const langPref = ${JSON.stringify(lang)};
+                const initialData = window.ytInitialPlayerResponse;
+                if (!initialData?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length) {
+                  return { error: 'No caption tracks in ytInitialPlayerResponse' };
+                }
+
+                const tracks = initialData.captions.playerCaptionsTracklistRenderer.captionTracks;
+                const available = tracks.map(t => t.languageCode + (t.kind === 'asr' ? ' (auto)' : ''));
+
+                let track = null;
+                if (langPref) {
+                  track = tracks.find(t => t.languageCode === langPref)
+                    || tracks.find(t => t.languageCode.startsWith(langPref));
+                }
+                if (!track) {
+                  track = tracks.find(t => t.kind !== 'asr') || tracks[0];
+                }
+
+                return {
+                  captionUrl: track.baseUrl,
+                  language: track.languageCode,
+                  kind: track.kind || 'manual',
+                  available,
+                  requestedLang: langPref || null,
+                  langMatched: !!(langPref && track.languageCode === langPref),
+                  langPrefixMatched: !!(langPref && track.languageCode !== langPref && track.languageCode.startsWith(langPref)),
+                  source: 'initial'
+                };
+              })()
+            `);
+        }
         if (!captionData || typeof captionData === 'string') {
             throw new CommandExecutionError(`Failed to get caption info: ${typeof captionData === 'string' ? captionData : 'null response'}`);
+        }
+        if (captionData.blocked) {
+            // Android API was blocked, and ytInitialPlayerResponse fallback was tried
+            // The caption URL from ytInitialPlayerResponse will likely fail too due to missing PoToken
+            // We'll try it anyway, but will show a detailed error if it fails
         }
         if (captionData.error) {
             throw new CommandExecutionError(`${captionData.error}${captionData.available ? ' (available: ' + captionData.available.join(', ') + ')' : ''}`);
@@ -125,14 +144,14 @@ cli({
         if (captionData.requestedLang && !captionData.langMatched && !captionData.langPrefixMatched) {
             console.error(`Warning: --lang "${captionData.requestedLang}" not found. Using "${captionData.language}" instead. Available: ${captionData.available.join(', ')}`);
         }
-        // Step 2: Fetch caption XML and parse segments
-        const segments = await page.evaluate(`
+        // Step 3: Fetch caption XML and parse segments
+        let segments = await page.evaluate(`
       (async () => {
         const resp = await fetch(${JSON.stringify(captionData.captionUrl)});
         const xml = await resp.text();
 
         if (!xml?.length) {
-          return { error: 'Caption URL returned empty response' };
+          return { error: 'Caption URL returned empty response', source: ${JSON.stringify(captionData.source)} };
         }
 
         function getAttr(tag, name) {
@@ -198,12 +217,20 @@ cli({
       })()
     `);
         if (!Array.isArray(segments)) {
-            throw new CommandExecutionError(segments?.error || 'Failed to parse caption segments');
+            const errorMsg = segments?.error || 'Failed to parse caption segments';
+            // Provide more context when both Android API and ytInitialPlayerResponse failed
+            if (segments?.error === 'Caption URL returned empty response' && segments?.source === 'initial') {
+                throw new CommandExecutionError(`YouTube blocked transcript access. Both methods failed:\n` +
+                    `1. Android API: Your IP may be flagged as a bot (try VPN/proxy)\n` +
+                    `2. Web captions: Requires PoToken which is missing (web caption URLs return empty)\n` +
+                    `Suggestions: Use a different IP/VPN, or try a video with manual subtitles.`);
+            }
+            throw new CommandExecutionError(errorMsg);
         }
         if (segments.length === 0) {
             throw new EmptyResultError('youtube transcript');
         }
-        // Step 3: Fetch chapters (for grouped mode)
+        // Step 4: Fetch chapters (for grouped mode)
         let chapters = [];
         if (mode === 'grouped') {
             try {
