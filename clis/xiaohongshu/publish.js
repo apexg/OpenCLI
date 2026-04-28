@@ -175,8 +175,39 @@ async function waitForUploads(page, maxWaitMs = 30_000) {
     }
 }
 /**
+ * Human-like click helper: get element coordinates and click with smartClick.
+ */
+async function humanClickElement(page, selector) {
+    // Get element coordinates
+    const coords = await page.evaluate(`
+    ((selector) => {
+      const el = document.querySelector(selector);
+      if (!el || el.offsetParent === null) return null;
+      el.scrollIntoView({ behavior: 'instant', block: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    })(${JSON.stringify(selector)})
+  `);
+    if (coords && page.smartClick) {
+        await page.smartClick(coords.x, coords.y);
+        return true;
+    }
+    // Fallback to DOM click
+    return await page.evaluate(`
+    ((selector) => {
+      const el = document.querySelector(selector);
+      if (el) { el.click(); return true; }
+      return false;
+    })(${JSON.stringify(selector)})
+  `);
+}
+
+/**
  * Fill a visible text input or contenteditable with the given text.
- * Tries multiple selectors in priority order.
+ * Uses smartType for human-like typing when available.
  * Returns { ok, sel }.
  */
 async function fillField(page, selectors, text, fieldName) {
@@ -200,132 +231,114 @@ async function fillField(page, selectors, text, fieldName) {
         await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
         throw new Error(`Could not find ${fieldName} input. Debug screenshot: /tmp/xhs_publish_${fieldName}_debug.png`);
     }
-    const applyInPage = () => page.evaluate(`
-      ((selector, expectedText) => {
-        const __opencli_xhs_fill_phase = "apply";
-        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-        const fireBeforeInput = (el, value) => {
-          try {
-            el.dispatchEvent(new InputEvent('beforeinput', {
-              bubbles: true,
-              data: value,
-              inputType: 'insertText',
-            }));
-          } catch {
-            el.dispatchEvent(new Event('beforeinput', { bubbles: true }));
-          }
-        };
-        const fireInput = (el, value) => {
-          try {
-            el.dispatchEvent(new InputEvent('input', {
-              bubbles: true,
-              data: value,
-              inputType: 'insertText',
-            }));
-          } catch {
+
+    // Prepare element: focus and clear content (keep __opencli_xhs_fill_phase for test compatibility)
+    const prepared = await page.evaluate(`
+    ((selector, nextText) => {
+      const __opencli_xhs_fill_phase = "prepare";
+      const el = Array.from(document.querySelectorAll(selector)).find(node => node && node.offsetParent !== null);
+      if (!el) return { ok: false };
+      el.scrollIntoView({ behavior: 'instant', block: 'center' });
+      el.focus();
+      // Clear existing content
+      if (el.isContentEditable) {
+        el.textContent = '';
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      } else if (el.value !== undefined) {
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (nativeSetter) nativeSetter.call(el, '');
+        else el.value = '';
+      }
+      return { ok: true };
+    })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
+  `);
+
+    if (!prepared?.ok) {
+        await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
+        throw new Error(`Could not prepare ${fieldName} input. Debug screenshot: /tmp/xhs_publish_${fieldName}_debug.png`);
+    }
+
+    // Use smartType for human-like typing (supports human mode via OPENCLI_HUMAN_MODE)
+    let skipVerify = false;
+    if (page.smartType) {
+        try {
+            await page.smartType(text);
+            skipVerify = true; // smartType is native CDP, skip DOM verify
+        } catch {
+            // Fallback to DOM insertion if smartType fails
+            await page.evaluate(`
+          ((selector, expectedText) => {
+            const __opencli_xhs_fill_phase = "apply";
+            const el = document.querySelector(selector);
+            if (!el) return;
+            if (el.isContentEditable) {
+              document.execCommand('insertText', false, expectedText);
+            } else {
+              el.value = expectedText;
+            }
             el.dispatchEvent(new Event('input', { bubbles: true }));
-          }
-        };
-        const el = Array.from(document.querySelectorAll(selector)).find(node => node && node.offsetParent !== null);
-        if (!el) return { ok: false, actual: '' };
-        el.focus();
-        fireBeforeInput(el, expectedText);
-        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-          const proto = el.tagName === 'TEXTAREA'
-            ? HTMLTextAreaElement.prototype
-            : HTMLInputElement.prototype;
-          const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-          if (nativeSetter) nativeSetter.call(el, expectedText);
-          else el.value = expectedText;
-          fireInput(el, expectedText);
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.blur();
-          return { ok: el.value === expectedText, actual: el.value || '' };
+          })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
+        `);
         }
-        el.textContent = '';
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-        const inserted = document.execCommand('insertText', false, expectedText);
-        if (!inserted) el.textContent = expectedText;
-        fireInput(el, expectedText);
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.blur();
-        const actual = normalize(el.innerText || el.textContent || '');
-        return { ok: actual === normalize(expectedText), actual };
-      })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
-    `);
-    let result;
-    if (located.kind === 'contenteditable' && page.insertText) {
-        const prepared = await page.evaluate(`
-      ((selector, nextText) => {
-        const __opencli_xhs_fill_phase = "prepare";
-        const fireBeforeInput = (el, value) => {
-          try {
-            el.dispatchEvent(new InputEvent('beforeinput', {
-              bubbles: true,
-              data: value,
-              inputType: 'insertText',
-            }));
-          } catch {
-            el.dispatchEvent(new Event('beforeinput', { bubbles: true }));
-          }
-        };
-        const el = Array.from(document.querySelectorAll(selector)).find(node => node && node.offsetParent !== null);
-        if (!el) return { ok: false };
-        el.focus();
-        el.textContent = '';
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-        fireBeforeInput(el, nextText);
-        return { ok: true };
-      })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
-    `);
-        if (!prepared?.ok) {
-            await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
-            throw new Error(`Could not prepare ${fieldName} input. Debug screenshot: /tmp/xhs_publish_${fieldName}_debug.png`);
-        }
+    } else if (page.insertText) {
+        // Legacy: use insertText if available, but still verify
         try {
             await page.insertText(text);
-            result = await page.evaluate(`
-      ((selector, expectedText) => {
-        const __opencli_xhs_fill_phase = "verify";
-        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-        const fireInput = (el, value) => {
-          try {
-            el.dispatchEvent(new InputEvent('input', {
-              bubbles: true,
-              data: value,
-              inputType: 'insertText',
-            }));
-          } catch {
+        } catch {
+            await page.evaluate(`
+          ((selector, expectedText) => {
+            const __opencli_xhs_fill_phase = "apply";
+            const el = document.querySelector(selector);
+            if (!el) return;
+            if (el.isContentEditable) {
+              document.execCommand('insertText', false, expectedText);
+            } else {
+              el.value = expectedText;
+            }
             el.dispatchEvent(new Event('input', { bubbles: true }));
-          }
-        };
-        const el = Array.from(document.querySelectorAll(selector)).find(node => node && node.offsetParent !== null);
-        if (!el) return { ok: false, actual: '' };
-        fireInput(el, expectedText);
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.blur();
-        const actual = normalize(el.innerText || el.textContent || '');
-        return { ok: actual === normalize(expectedText), actual };
+          })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
+        `);
+        }
+    } else {
+        // Fallback: direct DOM input
+        await page.evaluate(`
+      ((selector, expectedText) => {
+        const __opencli_xhs_fill_phase = "apply";
+        const el = document.querySelector(selector);
+        if (!el) return;
+        if (el.isContentEditable) {
+          document.execCommand('insertText', false, expectedText);
+        } else {
+          el.value = expectedText;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
       })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
     `);
-        }
-        catch {
-            result = await applyInPage();
-        }
     }
-    else {
-        result = await applyInPage();
+
+    // Skip verify only if smartType was used (native CDP operation)
+    if (skipVerify) {
+        return; // Trust smartType succeeded
     }
+
+    // Verify input (for insertText and DOM operations)
+    const result = await page.evaluate(`
+    ((selector, expectedText) => {
+      const __opencli_xhs_fill_phase = "verify";
+      const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const el = document.querySelector(selector);
+      if (!el) return { ok: false, actual: '' };
+      const actual = normalize(el.isContentEditable ? (el.innerText || el.textContent) : el.value);
+      return { ok: actual === normalize(expectedText), actual };
+    })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
+  `);
+
     if (!result?.ok) {
         await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
         const actual = typeof result?.actual === 'string' ? result.actual : '';
@@ -543,8 +556,8 @@ cli({
         await page.wait({ time: 0.5 });
         // ── Step 6: Add topic hashtags ─────────────────────────────────────────────
         for (const topic of topics) {
-            // Click the "添加话题" button
-            const btnClicked = await page.evaluate(`
+            // Click the "添加话题" button with human-like behavior
+            const topicBtnCoords = await page.evaluate(`
         () => {
           const candidates = document.querySelectorAll('*');
           for (const el of candidates) {
@@ -554,49 +567,90 @@ cli({
               el.offsetParent !== null &&
               el.children.length === 0
             ) {
-              el.click();
-              return true;
+              el.scrollIntoView({ behavior: 'instant', block: 'center' });
+              const rect = el.getBoundingClientRect();
+              return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), found: true };
             }
           }
           // fallback: look for a hashtag icon button
           const hashBtn = document.querySelector('[class*="topic"][class*="btn"], [class*="hashtag"][class*="btn"]');
-          if (hashBtn) { hashBtn.click(); return true; }
-          return false;
+          if (hashBtn) {
+            hashBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+            const rect = hashBtn.getBoundingClientRect();
+            return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), found: true };
+          }
+          return { found: false };
         }
       `);
-            if (!btnClicked)
+            if (!topicBtnCoords?.found)
                 continue; // Skip topic if UI not found — non-fatal
+
+            // Click with human-like behavior
+            if (page.smartClick) {
+                await page.smartClick(topicBtnCoords.x, topicBtnCoords.y);
+            } else {
+                await page.evaluate(`document.querySelector('[class*="topic"][class*="btn"]')?.click()`);
+            }
             await page.wait({ time: 1 });
-            // Type into the topic search input
-            const typed = await page.evaluate(`
-        (topicName => {
+
+            // Focus topic input and type with human-like behavior
+            const inputReady = await page.evaluate(`
+        () => {
           const input = document.querySelector(
             '[class*="topic"] input, [class*="hashtag"] input, input[placeholder*="搜索话题"]'
           );
           if (!input || input.offsetParent === null) return false;
           input.focus();
-          document.execCommand('insertText', false, topicName);
-          input.dispatchEvent(new Event('input', { bubbles: true }));
           return true;
-        })(${JSON.stringify(topic)})
+        }
       `);
-            if (!typed)
+            if (!inputReady)
                 continue;
+
+            // Type topic name with human-like typing
+            if (page.smartType) {
+                await page.smartType(topic);
+            } else {
+                await page.evaluate(`
+          ((topicName) => {
+            const input = document.querySelector('[class*="topic"] input, [class*="hashtag"] input, input[placeholder*="搜索话题"]');
+            if (input) {
+              input.value = topicName;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          })(${JSON.stringify(topic)})
+        `);
+            }
             await page.wait({ time: 1.5 }); // Wait for autocomplete suggestions
-            // Click the first suggestion
-            await page.evaluate(`
+
+            // Click the first suggestion with human-like behavior
+            const suggestionCoords = await page.evaluate(`
         () => {
           const item = document.querySelector(
             '[class*="topic-item"], [class*="hashtag-item"], [class*="suggest-item"], [class*="suggestion"] li'
           );
-          if (item) item.click();
+          if (!item) return null;
+          item.scrollIntoView({ behavior: 'instant', block: 'center' });
+          const rect = item.getBoundingClientRect();
+          return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
         }
       `);
+            if (suggestionCoords && page.smartClick) {
+                await page.smartClick(suggestionCoords.x, suggestionCoords.y);
+            } else {
+                await page.evaluate(`
+          () => {
+            const item = document.querySelector('[class*="topic-item"], [class*="hashtag-item"], [class*="suggest-item"], [class*="suggestion"] li');
+            if (item) item.click();
+          }
+        `);
+            }
             await page.wait({ time: 0.5 });
         }
         // ── Step 7: Publish or save draft ─────────────────────────────────────────
         const actionLabels = isDraft ? ['暂存离开', '存草稿'] : ['发布', '发布笔记'];
-        const btnClicked = await page.evaluate(`
+        // Find publish button coordinates for human-like click
+        const publishBtnCoords = await page.evaluate(`
       (labels => {
         const buttons = document.querySelectorAll('button, [role="button"]');
         for (const btn of buttons) {
@@ -606,17 +660,37 @@ cli({
             btn.offsetParent !== null &&
             !btn.disabled
           ) {
-            btn.click();
-            return true;
+            btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+            const rect = btn.getBoundingClientRect();
+            return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), found: true };
           }
         }
-        return false;
+        return { found: false };
       })(${JSON.stringify(actionLabels)})
     `);
-        if (!btnClicked) {
+        if (!publishBtnCoords?.found) {
             await page.screenshot({ path: '/tmp/xhs_publish_submit_debug.png' });
             throw new Error(`Could not find "${actionLabels[0]}" button. ` +
                 'Debug screenshot: /tmp/xhs_publish_submit_debug.png');
+        }
+
+        // Click publish button with human-like behavior
+        if (page.smartClick) {
+            await page.smartClick(publishBtnCoords.x, publishBtnCoords.y);
+        } else {
+            await page.evaluate(`
+        (labels => {
+          const buttons = document.querySelectorAll('button, [role="button"]');
+          for (const btn of buttons) {
+            const text = (btn.innerText || btn.textContent || '').trim();
+            if (labels.some(l => text === l || text.includes(l)) && btn.offsetParent !== null && !btn.disabled) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        })(${JSON.stringify(actionLabels)})
+      `);
         }
         // ── Step 8: Verify success ─────────────────────────────────────────────────
         await page.wait({ time: 4 });

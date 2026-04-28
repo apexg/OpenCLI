@@ -100,4 +100,18 @@ export interface IPage {
   nativeType?(text: string): Promise<void>;
   /** Press a key via CDP Input.dispatchKeyEvent. */
   nativeKeyPress?(key: string, modifiers?: string[]): Promise<void>;
+  /** Human-like mouse movement with Bezier curve trajectory. */
+  humanMove?(x: number, y: number): Promise<void>;
+  /** Human-like click with trajectory and natural press duration. */
+  humanClick?(x: number, y: number): Promise<void>;
+  /** Human-like typing with variable speed and typo simulation. */
+  humanType?(text: string): Promise<void>;
+  /** Human-like scroll down with non-linear steps and pauses. */
+  humanScrollDown?(pixels?: number): Promise<void>;
+  /** Human-like scroll to bottom with iterative scrolling. */
+  humanScrollToBottom?(maxIterations?: number): Promise<number>;
+  /** Smart click: human mode if enabled, otherwise native. */
+  smartClick?(x: number, y: number): Promise<void>;
+  /** Smart type: human mode if enabled, otherwise native. */
+  smartType?(text: string): Promise<void>;
 }

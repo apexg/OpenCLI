@@ -19,8 +19,20 @@ import { waitForDomStableJs } from './dom-helpers.js';
 import { isRecord, saveBase64ToFile } from '../utils.js';
 import { getAllElectronApps } from '../electron-apps.js';
 import { BasePage } from './base-page.js';
+import {
+  isHumanModeEnabled,
+  getHumanConfig,
+  randomInRange,
+  randomIntInRange,
+  easeInOut,
+  generateBezierCurve,
+  generateOvershootCurve,
+  getAdjacentKey,
+  type HumanConfig,
+} from './human.js';
 
 export interface CDPTarget {
+  id?: string; // targetId from Target.getTargets
   type?: string;
   url?: string;
   title?: string;
@@ -83,7 +95,12 @@ export class CDPBridge implements IBrowserFactory {
         this._ws = ws;
         try {
           await this.send('Page.enable');
-          await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
+          // Inject stealth scripts only when OPENCLI_CDP_STEALTH is not explicitly disabled.
+          // Default: enabled (stealth injected). Set OPENCLI_CDP_STEALTH=false to skip.
+          const stealthDisabled = process.env.OPENCLI_CDP_STEALTH === 'false' || process.env.OPENCLI_CDP_STEALTH === '0';
+          if (!stealthDisabled) {
+            await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
+          }
         } catch (err) {
           ws.close();
           reject(err instanceof Error ? err : new Error(String(err)));
@@ -185,6 +202,13 @@ export class CDPBridge implements IBrowserFactory {
 
 class CDPPage extends BasePage {
   private _pageEnabled = false;
+  private _currentTargetId: string | undefined; // Current page identity for setActivePage/getActivePage
+  private _frameContexts = new Map<string, number>(); // frameId → executionContextId
+
+  // Human-like behavior state
+  private _mouseX = 0;
+  private _mouseY = 0;
+  private _humanConfig: HumanConfig | null = null;
 
   // Network capture state (mirrors extension/src/cdp.ts NetworkCaptureEntry shape)
   private _networkCapturing = false;
@@ -359,11 +383,614 @@ class CDPPage extends BasePage {
   }
 
   async tabs(): Promise<unknown[]> {
-    return [];
+    // Use CDP Target domain to list all targets (pages/tabs)
+    const result = await this.bridge.send('Target.getTargets');
+    // Target.getTargets returns { targetInfos: TargetInfo[] }
+    // Each TargetInfo has: targetId, type, url, title, etc.
+    const targets = isRecord(result) && Array.isArray(result.targetInfos) ? result.targetInfos : [];
+    // Filter to 'page' type targets only (not background_page, service_worker, iframe, etc.)
+    return targets
+      .filter((t: unknown) => {
+        const target = t as { type?: string };
+        return target.type === 'page';
+      })
+      .map((t: unknown, i: number) => {
+        const target = t as { targetId?: string; id?: string; url?: string; title?: string };
+        const pageId = target.targetId || target.id;
+        return {
+          index: i,
+          page: pageId,
+          url: target.url,
+          title: target.title,
+          active: false,
+        };
+      });
   }
 
-  async selectTab(_target: number | string): Promise<void> {
-    // Not supported in direct CDP mode
+  async selectTab(target: number | string): Promise<void> {
+    // CDP Target domain doesn't have a "select" concept like chrome.tabs.update.
+    // In direct CDP mode, you operate on whichever target you connect to.
+    // This is a no-op placeholder to satisfy the IPage interface.
+    // For real tab switching, you would need to:
+    // 1. Close current CDP connection
+    // 2. Connect to a different target's WebSocket URL
+    // This is a design limitation of direct CDP mode vs extension mode.
+  }
+
+  // ─── Tab creation/closing via CDP Target domain ───────────────────────────
+
+  /**
+   * Create a new tab/page target via CDP Target.createTarget.
+   * Returns the targetId of the newly created page.
+   * Note: The new tab is NOT automatically connected - caller must establish
+   * a new CDP WebSocket connection to the new target's webSocketDebuggerUrl.
+   */
+  async newTab(url?: string): Promise<string | undefined> {
+    const result = await this.bridge.send('Target.createTarget', {
+      url: url ?? 'about:blank',
+    }) as { targetId?: string };
+    return result.targetId;
+  }
+
+  /**
+   * Close a tab/page target via CDP Target.closeTarget.
+   * If no target specified, closes the current connected target (if tracked).
+   */
+  async closeTab(target?: number | string): Promise<void> {
+    let targetId: string | undefined;
+    if (typeof target === 'string') {
+      targetId = target;
+    } else if (typeof target === 'number') {
+      // Index-based: resolve via tabs()
+      const tabs = await this.tabs() as Array<{ index: number; page?: string }>;
+      const tab = tabs.find(t => t.index === target);
+      targetId = tab?.page;
+    } else {
+      targetId = this._currentTargetId;
+    }
+    if (!targetId) {
+      throw new Error('No target to close - specify a targetId or index');
+    }
+    await this.bridge.send('Target.closeTarget', { targetId });
+    if (targetId === this._currentTargetId) {
+      this._currentTargetId = undefined;
+      this._lastUrl = null;
+    }
+  }
+
+  // ─── Window/Page identity management ──────────────────────────────────────
+
+  /** Get the active page identity (targetId) */
+  getActivePage(): string | undefined {
+    return this._currentTargetId;
+  }
+
+  /** Bind this Page instance to a specific page identity (targetId) */
+  setActivePage(page?: string): void {
+    this._currentTargetId = page;
+    this._lastUrl = null;
+  }
+
+  /**
+   * Close the current browser window/target.
+   * In direct CDP mode, this closes the connected target via Target.closeTarget.
+   */
+  async closeWindow(): Promise<void> {
+    if (this._currentTargetId) {
+      await this.bridge.send('Target.closeTarget', { targetId: this._currentTargetId });
+    }
+    this._currentTargetId = undefined;
+    this._lastUrl = null;
+  }
+
+  /**
+   * Insert text via native CDP Input.insertText into the currently focused element.
+   * Alias for nativeType - useful for rich editors.
+   */
+  async insertText(text: string): Promise<void> {
+    await this.bridge.send('Input.insertText', { text });
+  }
+
+  // ─── Native input methods (CDP Input domain) ───────────────────────────
+
+  /** Precise click using CDP Input.dispatchMouseEvent */
+  async nativeClick(x: number, y: number): Promise<void> {
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x, y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x, y,
+      button: 'left',
+      clickCount: 1,
+    });
+  }
+
+  // ─── Human-like input methods ─────────────────────────────────────────────
+
+  /**
+   * Human-like mouse movement with Bezier curve trajectory.
+   * Simulates natural mouse movement: curves, variable speed, overshoot, jitter.
+   */
+  async humanMove(x: number, y: number): Promise<void> {
+    const cfg = this._humanConfig ?? getHumanConfig();
+
+    const distance = Math.sqrt(Math.pow(x - this._mouseX, 2) + Math.pow(y - this._mouseY, 2));
+
+    // For very short distances, just move directly
+    if (distance < 5) {
+      await this.bridge.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x, y,
+      });
+      this._mouseX = x;
+      this._mouseY = y;
+      return;
+    }
+
+    // Calculate steps based on distance
+    const steps = Math.max(cfg.mouseBezierStepsMin, Math.min(cfg.mouseBezierStepsMax, Math.floor(distance / 5)));
+
+    // Generate Bezier curve trajectory
+    let points = generateBezierCurve(this._mouseX, this._mouseY, x, y, steps, cfg.mouseJitterRange);
+
+    // Overshoot logic: sometimes overshoot and correct back
+    if (Math.random() < cfg.mouseOvershootProbability) {
+      const overshootFactor = randomInRange(cfg.mouseOvershootFactorMin, cfg.mouseOvershootFactorMax);
+      const overshootPoints = generateOvershootCurve(x, y, this._mouseX, this._mouseY, overshootFactor, 15, cfg.mouseJitterRange);
+      points = points.concat(overshootPoints);
+    }
+
+    // Calculate duration based on speed
+    const duration = distance / randomInRange(cfg.mouseSpeedMin, cfg.mouseSpeedMax);
+    const totalPoints = points.length;
+
+    // Move along trajectory with ease-in-out speed
+    for (let i = 0; i < totalPoints; i++) {
+      const point = points[i];
+      const t = i / totalPoints;
+      const speedFactor = easeInOut(t);
+      const baseDelay = duration / totalPoints;
+      const delay = baseDelay / (speedFactor + 0.3) + randomInRange(-0.002, 0.005);
+
+      await this.bridge.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: point.x,
+        y: point.y,
+      });
+
+      this._mouseX = point.x;
+      this._mouseY = point.y;
+
+      // Small delay between points (convert seconds to ms)
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay * 1000));
+      }
+    }
+
+    // Ensure we end at exact target
+    this._mouseX = x;
+    this._mouseY = y;
+  }
+
+  /**
+   * Human-like click with trajectory movement, jitter, and natural press duration.
+   */
+  async humanClick(x: number, y: number): Promise<void> {
+    const cfg = this._humanConfig ?? getHumanConfig();
+
+    // Add jitter to click position (don't always click exact center)
+    const actualX = x + randomInRange(-cfg.mouseClickJitterPx, cfg.mouseClickJitterPx);
+    const actualY = y + randomInRange(-cfg.mouseClickJitterPx, cfg.mouseClickJitterPx);
+
+    // Move to target with human trajectory
+    await this.humanMove(actualX, actualY);
+
+    // Small hover delay before clicking
+    await new Promise(resolve => setTimeout(resolve, randomInRange(50, 150)));
+
+    // Press with natural duration (human takes 50-150ms between down/up)
+    const pressDuration = randomInRange(cfg.mouseClickDelayMinMs, cfg.mouseClickDelayMaxMs);
+
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: actualX,
+      y: actualY,
+      button: 'left',
+      clickCount: 1,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, pressDuration));
+
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: actualX,
+      y: actualY,
+      button: 'left',
+      clickCount: 1,
+    });
+
+    // Small delay after click
+    await new Promise(resolve => setTimeout(resolve, randomInRange(50, 150)));
+  }
+
+  /**
+   * Human-like typing with variable speed, typo simulation, and thinking pauses.
+   * Uses Input.dispatchKeyEvent for individual characters (not Input.insertText).
+   */
+  async humanType(text: string): Promise<void> {
+    const cfg = this._humanConfig ?? getHumanConfig();
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+
+      // Typo simulation: press adjacent key and correct
+      if (Math.random() < cfg.keyTypoProbability) {
+        const wrongChar = getAdjacentKey(char);
+        if (wrongChar) {
+          // Press wrong key
+          await this._dispatchKeyChar(wrongChar);
+          await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.keyTypoDelayMinMs, cfg.keyTypoDelayMaxMs)));
+
+          // Press Backspace to correct
+          await this.bridge.send('Input.dispatchKeyEvent', {
+            type: 'keyDown',
+            key: 'Backspace',
+            code: 'Backspace',
+          });
+          await new Promise(resolve => setTimeout(resolve, randomInRange(80, 150)));
+          await this.bridge.send('Input.dispatchKeyEvent', {
+            type: 'keyUp',
+            key: 'Backspace',
+            code: 'Backspace',
+          });
+          await new Promise(resolve => setTimeout(resolve, randomInRange(100, 250)));
+        }
+      }
+
+      // Press correct character
+      await this._dispatchKeyChar(char);
+
+      // Thinking pause simulation (every N chars, may pause longer)
+      const shouldPause = i > 0 && i % cfg.keyTypoPauseWordCount === 0 && Math.random() < cfg.keyTypoPauseProbability;
+      if (shouldPause) {
+        await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.keyThinkingPauseMinMs, cfg.keyThinkingPauseMaxMs)));
+      } else {
+        // Normal key delay
+        await new Promise(resolve => setTimeout(resolve, randomIntInRange(cfg.keyDelayMinMs, cfg.keyDelayMaxMs)));
+      }
+    }
+  }
+
+  /**
+   * Dispatch a single character key event.
+   */
+  private async _dispatchKeyChar(char: string): Promise<void> {
+    // Handle special characters
+    if (char === ' ') {
+      await this.bridge.send('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: ' ',
+        code: 'Space',
+      });
+      await this.bridge.send('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: ' ',
+        code: 'Space',
+      });
+      return;
+    }
+
+    if (char === '\n' || char === '\r') {
+      await this.bridge.send('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: 'Enter',
+        code: 'Enter',
+      });
+      await this.bridge.send('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'Enter',
+        code: 'Enter',
+      });
+      return;
+    }
+
+    if (char === '\t') {
+      await this.bridge.send('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: 'Tab',
+        code: 'Tab',
+      });
+      await this.bridge.send('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'Tab',
+        code: 'Tab',
+      });
+      return;
+    }
+
+    // Regular character - use insertText for reliability (handles Unicode/CJK)
+    // For human-like typing, we still want individual character insertion
+    await this.bridge.send('Input.insertText', { text: char });
+  }
+
+  /**
+   * Human-like scroll with non-linear steps, reading pauses, and backtrack behavior.
+   */
+  async humanScrollDown(pixels?: number): Promise<void> {
+    const cfg = this._humanConfig ?? getHumanConfig();
+    const targetPixels = pixels ?? randomIntInRange(cfg.scrollStepMinPx, cfg.scrollStepMaxPx);
+
+    // Backtrack simulation: 10% chance to scroll back a bit first (looking back)
+    if (Math.random() < cfg.scrollBacktrackProbability) {
+      const backtrack = randomIntInRange(cfg.scrollBacktrackMinPx, cfg.scrollBacktrackMaxPx);
+      await this.bridge.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        deltaX: 0,
+        deltaY: -backtrack,  // Negative = scroll up/back
+      });
+      await new Promise(resolve => setTimeout(resolve, randomInRange(100, 300)));
+    }
+
+    // Scroll down
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      deltaX: 0,
+      deltaY: targetPixels,
+    });
+
+    // Reading pause
+    await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.scrollPauseMinMs, cfg.scrollPauseMaxMs)));
+  }
+
+  /**
+   * Human-like scroll to bottom of page with iterative scrolling and pauses.
+   */
+  async humanScrollToBottom(maxIterations: number = 100): Promise<number> {
+    const cfg = this._humanConfig ?? getHumanConfig();
+    let iterations = 0;
+
+    // Get initial scroll position
+    const initialScroll = await this.evaluate(`
+      (() => ({
+        scrollHeight: document.body.scrollHeight,
+        scrollTop: document.documentElement.scrollTop || document.body.scrollTop,
+        clientHeight: document.documentElement.clientHeight || document.body.clientHeight
+      }))()
+    `) as { scrollHeight: number; scrollTop: number; clientHeight: number } | null;
+
+    if (!initialScroll) return 0;
+
+    let { scrollHeight, scrollTop, clientHeight } = initialScroll;
+
+    while (scrollTop + clientHeight < scrollHeight - 50 && iterations < maxIterations) {
+      iterations++;
+
+      const scrollStep = randomIntInRange(cfg.scrollStepMinPx, cfg.scrollStepMaxPx);
+
+      // Backtrack chance
+      if (Math.random() < cfg.scrollBacktrackProbability) {
+        const backtrack = randomIntInRange(cfg.scrollBacktrackMinPx, cfg.scrollBacktrackMaxPx);
+        await this.bridge.send('Input.dispatchMouseEvent', {
+          type: 'mouseWheel',
+          deltaX: 0,
+          deltaY: -backtrack,
+        });
+        await new Promise(resolve => setTimeout(resolve, randomInRange(100, 300)));
+      }
+
+      // Scroll down
+      await this.bridge.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        deltaX: 0,
+        deltaY: scrollStep,
+      });
+
+      // Reading pause
+      await new Promise(resolve => setTimeout(resolve, randomInRange(cfg.scrollPauseMinMs, cfg.scrollPauseMaxMs)));
+
+      // Update scroll state
+      const state = await this.evaluate(`
+        (() => ({
+          scrollHeight: document.body.scrollHeight,
+          scrollTop: document.documentElement.scrollTop || document.body.scrollTop,
+          clientHeight: document.documentElement.clientHeight || document.body.clientHeight
+        }))()
+      `) as { scrollHeight: number; scrollTop: number; clientHeight: number } | null;
+
+      if (state) {
+        scrollHeight = state.scrollHeight;
+        scrollTop = state.scrollTop;
+        clientHeight = state.clientHeight;
+      }
+    }
+
+    return iterations;
+  }
+
+  /**
+   * Set human behavior configuration (overrides environment defaults).
+   */
+  setHumanConfig(cfg: Partial<HumanConfig>): void {
+    this._humanConfig = { ...getHumanConfig(), ...cfg };
+  }
+
+  /**
+   * Smart click: uses human mode if enabled, otherwise native click.
+   */
+  async smartClick(x: number, y: number): Promise<void> {
+    if (isHumanModeEnabled()) {
+      await this.humanClick(x, y);
+    } else {
+      await this.nativeClick(x, y);
+    }
+  }
+
+  /**
+   * Smart type: uses human mode if enabled, otherwise instant insert.
+   */
+  async smartType(text: string): Promise<void> {
+    if (isHumanModeEnabled()) {
+      await this.humanType(text);
+    } else {
+      await this.nativeType(text);
+    }
+  }
+
+  /** Precise text insertion using CDP Input.insertText (handles Unicode/CJK) */
+  async nativeType(text: string): Promise<void> {
+    await this.bridge.send('Input.insertText', { text });
+  }
+
+  /** Key press with modifiers using CDP Input.dispatchKeyEvent */
+  async nativeKeyPress(key: string, modifiers: string[] = []): Promise<void> {
+    let modifierFlags = 0;
+    for (const mod of modifiers) {
+      if (mod === 'Alt') modifierFlags |= 1;
+      if (mod === 'Ctrl') modifierFlags |= 2;
+      if (mod === 'Meta') modifierFlags |= 4;
+      if (mod === 'Shift') modifierFlags |= 8;
+    }
+    await this.bridge.send('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key,
+      modifiers: modifierFlags,
+    });
+    await this.bridge.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key,
+      modifiers: modifierFlags,
+    });
+  }
+
+  // ─── CDP passthrough for advanced DOM/Input operations ──────────────────
+
+  /** Direct CDP command passthrough (mirrors extension's handleCdp) */
+  async cdp(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    return this.bridge.send(method, params);
+  }
+
+  // ─── File upload via CDP DOM.setFileInputFiles ──────────────────────────
+
+  /**
+   * Set local file paths on a file input element via CDP.
+   * Chrome reads files directly from local filesystem, bypassing base64 limits.
+   * Ported from extension/src/cdp.ts setFileInputFiles()
+   */
+  async setFileInput(files: string[], selector?: string): Promise<void> {
+    await this.bridge.send('DOM.enable');
+    const doc = await this.bridge.send('DOM.getDocument') as { root?: { nodeId?: number } };
+    const rootNodeId = doc.root?.nodeId;
+    if (!rootNodeId) {
+      throw new Error('Failed to get document root nodeId');
+    }
+    const query = selector || 'input[type="file"]';
+    const result = await this.bridge.send('DOM.querySelector', {
+      nodeId: rootNodeId,
+      selector: query,
+    }) as { nodeId?: number };
+    if (!result?.nodeId) {
+      throw new Error(`No element found matching selector: ${query}`);
+    }
+    await this.bridge.send('DOM.setFileInputFiles', {
+      files,
+      nodeId: result.nodeId,
+    });
+  }
+
+  // ─── Frame tracking for cross-origin frame execution ────────────────────
+
+  /** Enable frame context tracking (call after Page.enable) */
+  private async enableFrameTracking(): Promise<void> {
+    this.bridge.on('Runtime.executionContextCreated', (params: unknown) => {
+      const p = params as { context?: { id: number; auxData?: { frameId?: string; isDefault?: boolean } } };
+      if (p.context?.auxData?.frameId && p.context.auxData.isDefault === true) {
+        this._frameContexts.set(p.context.auxData.frameId, p.context.id);
+      }
+    });
+    this.bridge.on('Runtime.executionContextDestroyed', (params: unknown) => {
+      const p = params as { executionContextId?: number };
+      if (p.executionContextId) {
+        for (const [fid, cid] of this._frameContexts) {
+          if (cid === p.executionContextId) { this._frameContexts.delete(fid); break; }
+        }
+      }
+    });
+    this.bridge.on('Runtime.executionContextsCleared', () => {
+      this._frameContexts.clear();
+    });
+    await this.bridge.send('Runtime.enable');
+  }
+
+  /** Get frame tree (cross-origin frames) */
+  async frames(): Promise<Array<{ index: number; frameId: string; url: string; name: string }>> {
+    const tree = await this.bridge.send('Page.getFrameTree') as { frameTree?: { frame?: { id?: string; url?: string; name?: string }; childFrames?: unknown[] } };
+    const rootFrame = tree.frameTree?.frame;
+    if (!rootFrame) return [];
+
+    const frames: Array<{ index: number; frameId: string; url: string; name: string }> = [];
+    const rootOrigin = getUrlOrigin(rootFrame.url);
+
+    // Collect cross-origin frames (same-origin frames expand inline in DOM)
+    const collect = (node: unknown, accessibleOrigin: string | null) => {
+      const n = node as { childFrames?: unknown[]; frame?: { id?: string; url?: string; name?: string } };
+      for (const child of (n.childFrames || [])) {
+        const c = child as { frame?: { id?: string; url?: string; name?: string; unreachableUrl?: string } };
+        const frame = c.frame;
+        const frameUrl = frame?.url || frame?.unreachableUrl || '';
+        const frameOrigin = getUrlOrigin(frameUrl);
+
+        // Same-origin frames expand inline, don't get an [F#] slot
+        if (accessibleOrigin && frameOrigin && frameOrigin === accessibleOrigin) {
+          collect(child, frameOrigin);
+          continue;
+        }
+
+        frames.push({
+          index: frames.length,
+          frameId: frame?.id || '',
+          url: frameUrl,
+          name: frame?.name || '',
+        });
+      }
+    };
+
+    collect(tree.frameTree, rootOrigin);
+    return frames;
+  }
+
+  /** Execute JS in a specific frame by index */
+  async evaluateInFrame(js: string, frameIndex: number): Promise<unknown> {
+    if (!this._pageEnabled) {
+      await this.bridge.send('Page.enable');
+      this._pageEnabled = true;
+      await this.enableFrameTracking();
+    }
+
+    const frames = await this.frames();
+    if (frameIndex < 0 || frameIndex >= frames.length) {
+      throw new Error(`Frame index ${frameIndex} out of range (${frames.length} cross-origin frames available)`);
+    }
+    const frame = frames[frameIndex];
+    const contextId = this._frameContexts.get(frame.frameId);
+    if (contextId === undefined) {
+      throw new Error(`No execution context found for frame ${frame.frameId}. The frame may not be loaded yet.`);
+    }
+
+    const expression = wrapForEval(js);
+    const result = await this.bridge.send('Runtime.evaluate', {
+      expression,
+      contextId,
+      returnByValue: true,
+      awaitPromise: true,
+    }) as RuntimeEvaluateResult;
+    if (result.exceptionDetails) {
+      throw new Error('Evaluate error: ' + (result.exceptionDetails.exception?.description || 'Unknown exception'));
+    }
+    return result.result?.value;
   }
 }
 
@@ -444,6 +1071,15 @@ function compilePreferredPattern(raw: string | undefined): RegExp | undefined {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function getUrlOrigin(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 export const __test__ = {

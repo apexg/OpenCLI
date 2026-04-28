@@ -1,56 +1,27 @@
 # Changelog
 
-## Unreleased
+## [1.7.7](https://github.com/jackwener/opencli/compare/v1.7.6...v1.7.7) (2026-04-22)
 
 ### Features
 
-* **browser** — `bind` attaches `bound:*` workspaces to user-owned Chrome tabs without taking over window lifecycle; `sessions` reports `idleMsRemaining: null` for bound workspaces because they do not schedule idle close timers. ([#1169](https://github.com/jackwener/opencli/issues/1169), [#929](https://github.com/jackwener/opencli/issues/929))
+* **Human-like input simulation** — `OPENCLI_HUMAN_MODE=true` enables behavior-based anti-bot bypass with:
+  - **Mouse**: Bezier curve trajectory, ease-in-out speed (slow→fast→slow), 20% overshoot probability, ±1.5px jitter
+  - **Keyboard**: variable typing speed (30-100ms per char), 3% typo simulation (adjacent key + backspace), thinking pauses (0.5-1.5s every 5 chars)
+  - **Scroll**: non-linear scrolling (300-800px per step), reading pauses (0.5-2.5s), 10% backtrack probability
+* **CDP native human operations** — `smartClick`, `smartType`, `humanMove` methods via CDP Input domain
+* **BasePage human mode integration** — `click()` and `typeText()` use human-like operations when `OPENCLI_HUMAN_MODE=true`
+* **Xiaohongshu publish human mode** — adapter uses `smartType`/`smartClick` for natural input and button clicks
 
-## [1.7.8](https://github.com/jackwener/opencli/compare/v1.7.7...v1.7.8) (2026-04-25)
+### Configuration
 
-### Features
-
-* **powerchina** — procurement search adapter. ([#1155](https://github.com/jackwener/opencli/issues/1155))
-* **toutiao** — `articles` adapter for 头条号 creator dashboard. ([#1148](https://github.com/jackwener/opencli/issues/1148))
-* **weixin** — `create-draft` and `drafts` commands for Official Account. ([#1095](https://github.com/jackwener/opencli/issues/1095))
-
-### Bug Fixes
-
-* **chatgpt-app** — use AX send flow and support zh-CN generating state. ([#1135](https://github.com/jackwener/opencli/issues/1135))
-* **deepseek** — fix history titles and resume conversation on `ask`. ([#1153](https://github.com/jackwener/opencli/issues/1153))
-* **amazon** — fall back discussion to product page. ([#1154](https://github.com/jackwener/opencli/issues/1154))
-* **sinafinance** — match stock symbol in addition to name. ([#1158](https://github.com/jackwener/opencli/issues/1158))
-
-### Chores
-
-* **extension** — restore pre-1.6.8 neon terminal icons. ([#1177](https://github.com/jackwener/opencli/issues/1177))
-
-## [1.7.7](https://github.com/jackwener/opencli/compare/v1.7.6...v1.7.7) (2026-04-23)
-
-### Features
-
-* **51job** — comprehensive adapter: `search`, `hot`, `detail`, `company`. ([#1132](https://github.com/jackwener/opencli/issues/1132))
-* **weread** — `ai-outline` command for AI-generated book outlines. ([#1141](https://github.com/jackwener/opencli/issues/1141))
-* **web/download** — video/audio/iframe download + `--stdout` streaming. ([#1146](https://github.com/jackwener/opencli/issues/1146))
-* **download** — hardened HTML→Markdown pipeline with better element handling. ([#1143](https://github.com/jackwener/opencli/issues/1143))
-* **verify** — fixture-based value validation + skill docs for COOKIE pitfalls. ([#1131](https://github.com/jackwener/opencli/issues/1131))
-* **agent-native retrospective** — analyze / verify guards / fixture content checks. ([#1133](https://github.com/jackwener/opencli/issues/1133))
-* **twitter** — expose `has_media` and `media_urls` columns. ([#1115](https://github.com/jackwener/opencli/issues/1115))
-
-### Bug Fixes
-
-* **core** — quality audit fixes: elapsed=0 display, daemon error handler state reset, cause chain truncation guard, download cookie expiry, launcher async kill, verbose error logging. ([#1151](https://github.com/jackwener/opencli/issues/1151))
-* **daemon** — allow extension ping CORS for reachability probing. ([#1150](https://github.com/jackwener/opencli/issues/1150))
-* **deepseek** — separate thinking process from response in `--think` mode. ([#1142](https://github.com/jackwener/opencli/issues/1142))
-* **deepseek** — use position-based model selection instead of text matching. ([#1123](https://github.com/jackwener/opencli/issues/1123))
-* **weread/book** — add fallback selectors for reader page without cover. ([#1138](https://github.com/jackwener/opencli/issues/1138))
-* **xiaoyuzhou** — correct podcast-episodes API endpoint. ([#1129](https://github.com/jackwener/opencli/issues/1129))
-* **bilibili** — resolve full video URLs and preserve full description. ([#1118](https://github.com/jackwener/opencli/issues/1118))
-
-### Docs
-
-* Fix stale references in READMEs and autofix skill doc. ([#1130](https://github.com/jackwener/opencli/issues/1130))
-* Restore and rewrite `opencli-usage` as orientation skill. ([#1128](https://github.com/jackwener/opencli/issues/1128))
+Environment variables for fine-tuning human behavior:
+- `OPENCLI_HUMAN_MOUSE_SPEED_MIN/MAX` — mouse speed (px/s)
+- `OPENCLI_HUMAN_MOUSE_JITTER` — jitter range (±px)
+- `OPENCLI_HUMAN_MOUSE_OVERSHOOT_PROB` — overshoot probability
+- `OPENCLI_HUMAN_TYPO_PROB` — typo probability
+- `OPENCLI_HUMAN_KEY_DELAY_MIN/MAX` — key delay (ms)
+- `OPENCLI_HUMAN_SCROLL_STEP_MIN/MAX` — scroll step (px)
+- `OPENCLI_HUMAN_SCROLL_PAUSE_MIN/MAX` — scroll pause (ms)
 
 ## [1.7.6](https://github.com/jackwener/opencli/compare/v1.7.5...v1.7.6) (2026-04-21)
 

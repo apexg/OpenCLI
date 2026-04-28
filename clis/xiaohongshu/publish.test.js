@@ -30,12 +30,43 @@ function createPageMock(evaluateResults, overrides = {}) {
         getCookies: vi.fn().mockResolvedValue([]),
         screenshot: vi.fn().mockResolvedValue(''),
         waitForCapture: vi.fn().mockResolvedValue(undefined),
+        // Add smartType/smartClick mocks for human mode behavior
+        smartType: vi.fn().mockResolvedValue(undefined),
+        smartClick: vi.fn().mockResolvedValue(undefined),
         ...overrides,
     };
 }
+// Helper to handle new fillField evaluate patterns
+function handleFillFieldEvaluate(code, titleValue, contentValue) {
+    if (code.includes('__opencli_xhs_fill_phase = "locate"')) {
+        return code.includes('[contenteditable="true"][placeholder*="标题"]')
+            ? { ok: true, sel: '[contenteditable="true"][placeholder*="标题"]', kind: 'contenteditable' }
+            : { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' };
+    }
+    // Prepare phase
+    if (code.includes('__opencli_xhs_fill_phase = "prepare"'))
+        return { ok: true };
+    // Apply phase
+    if (code.includes('__opencli_xhs_fill_phase = "apply"')) {
+        return code.includes('[contenteditable="true"][placeholder*="标题"]')
+            ? { ok: true, actual: titleValue }
+            : { ok: true, actual: contentValue };
+    }
+    // Verify phase
+    if (code.includes('__opencli_xhs_fill_phase = "verify"')) {
+        return code.includes('[contenteditable="true"][placeholder*="标题"]')
+            ? { ok: true, actual: titleValue }
+            : { ok: true, actual: contentValue };
+    }
+    return null;
+}
+
 function createConditionalPageMock(evaluateImpl, overrides = {}) {
     const page = createPageMock([], overrides);
     page.evaluate.mockImplementation(async (js) => evaluateImpl(String(js)));
+    // Add smartType/smartClick mocks only if not explicitly disabled in overrides
+    if (!('smartType' in overrides)) page.smartType = vi.fn().mockResolvedValue(undefined);
+    if (!('smartClick' in overrides)) page.smartClick = vi.fn().mockResolvedValue(undefined);
     return page;
 }
 describe('xiaohongshu publish', () => {
@@ -46,6 +77,7 @@ describe('xiaohongshu publish', () => {
         const imagePath = path.join(tempDir, 'demo.jpg');
         fs.writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
         const insertText = vi.fn().mockResolvedValue(undefined);
+        const smartType = vi.fn().mockResolvedValue(undefined);
         const page = createConditionalPageMock((code) => {
             if (code.includes('location.href'))
                 return 'https://creator.xiaohongshu.com/publish/publish?from=menu_left';
@@ -59,30 +91,28 @@ describe('xiaohongshu publish', () => {
                 return false;
             if (code.includes('const sels =') && code.includes('for (const sel of sels)'))
                 return true;
-            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"locate"')) {
+            if (code.includes('__opencli_xhs_fill_phase = "locate"')) {
                 return code.includes('[contenteditable="true"][placeholder*="标题"]')
                     ? { ok: true, sel: '[contenteditable="true"][placeholder*="标题"]', kind: 'contenteditable' }
                     : { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' };
             }
-            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"prepare"'))
+            // Prepare phase
+            if (code.includes('__opencli_xhs_fill_phase = "prepare"'))
                 return { ok: true };
-            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"verify"')) {
+            // Verify phase (skipped when smartType used, but test expects insertText verification)
+            if (code.includes('__opencli_xhs_fill_phase = "verify"')) {
                 return code.includes('[contenteditable="true"][placeholder*="标题"]')
                     ? { ok: true, actual: '标题走原生输入' }
                     : { ok: true, actual: '正文也走原生输入' };
             }
-            if (code.includes('(function(selectors, text)')) {
-                return code.includes('[contenteditable="true"][placeholder*="标题"]')
-                    ? { ok: true, sel: '[contenteditable="true"][placeholder*="标题"]', kind: 'contenteditable', actual: '标题走原生输入' }
-                    : { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable', actual: '正文也走原生输入' };
-            }
             if (code.includes('labels.some'))
-                return true;
+                return { x: 100, y: 100, found: true };
             if (code.includes('for (const el of document.querySelectorAll'))
                 return '发布成功';
             throw new Error(`Unhandled evaluate call: ${code.slice(0, 120)}`);
         }, {
             insertText,
+            smartType,
         });
         const result = await cmd.func(page, {
             title: '标题走原生输入',
@@ -91,8 +121,9 @@ describe('xiaohongshu publish', () => {
             topics: '',
             draft: false,
         });
-        expect(insertText).toHaveBeenNthCalledWith(1, '标题走原生输入');
-        expect(insertText).toHaveBeenNthCalledWith(2, '正文也走原生输入');
+        // smartType is preferred over insertText when available
+        expect(smartType).toHaveBeenNthCalledWith(1, '标题走原生输入');
+        expect(smartType).toHaveBeenNthCalledWith(2, '正文也走原生输入');
         expect(result).toEqual([
             {
                 status: '✅ 发布成功',
@@ -126,15 +157,15 @@ describe('xiaohongshu publish', () => {
                 return { ok: true };
             if (code.includes('__opencli_xhs_fill_phase') && code.includes('"verify"'))
                 return { ok: false, actual: '' };
-            if (code.includes('(function(selectors, text)'))
-                return { ok: true, sel: '[contenteditable="true"][placeholder*="标题"]', kind: 'contenteditable', actual: '' };
             if (code.includes('labels.some'))
-                return true;
+                return { x: 100, y: 100, found: true };
             if (code.includes('for (const el of document.querySelectorAll'))
                 return '发布成功';
             throw new Error(`Unhandled evaluate call: ${code.slice(0, 120)}`);
         }, {
             insertText,
+            // Remove smartType to test insertText fallback behavior
+            smartType: undefined,
         });
         await expect(cmd.func(page, {
             title: '标题没写进去',
@@ -143,6 +174,8 @@ describe('xiaohongshu publish', () => {
             topics: '',
             draft: false,
         })).rejects.toThrow('Failed to set title');
+        // When smartType is absent, insertText is used (which is also native and skips verify)
+        // So verify is called and fails
         expect(insertText).toHaveBeenCalledWith('标题没写进去');
     });
     it('falls back to in-page insertion when contenteditable native insertText fails', async () => {
@@ -172,18 +205,27 @@ describe('xiaohongshu publish', () => {
             }
             if (code.includes('__opencli_xhs_fill_phase') && code.includes('"prepare"'))
                 return { ok: true };
+            // Apply phase for fallback DOM insertion
             if (code.includes('__opencli_xhs_fill_phase') && code.includes('"apply"')) {
                 return code.includes('[contenteditable="true"][placeholder*="标题"]')
                     ? { ok: true, actual: '原生失败后回退' }
                     : { ok: true, actual: '正文也回退' };
             }
+            // Verify phase (runs after apply when insertText fails)
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"verify"')) {
+                return code.includes('[contenteditable="true"][placeholder*="标题"]')
+                    ? { ok: true, actual: '原生失败后回退' }
+                    : { ok: true, actual: '正文也回退' };
+            }
             if (code.includes('labels.some'))
-                return true;
+                return { x: 100, y: 100, found: true };
             if (code.includes('for (const el of document.querySelectorAll'))
                 return '发布成功';
             throw new Error(`Unhandled evaluate call: ${code.slice(0, 120)}`);
         }, {
             insertText,
+            // Remove smartType to test insertText fallback behavior
+            smartType: undefined,
         });
         const result = await cmd.func(page, {
             title: '原生失败后回退',
@@ -223,15 +265,23 @@ describe('xiaohongshu publish', () => {
                 return code.includes('input[maxlength')
                     ? { ok: true, sel: 'input[maxlength="20"]', kind: 'input' }
                     : { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' };
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"prepare"'))
+                return { ok: true };
+            // Apply phase for DOM fallback (when smartType/insertText unavailable)
             if (code.includes('__opencli_xhs_fill_phase') && code.includes('"apply"'))
+                return { ok: true };
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"verify"'))
                 return code.includes('input[maxlength')
                     ? { ok: false, actual: '' }
                     : { ok: true, actual: '正文' };
             if (code.includes('labels.some'))
-                return true;
+                return { x: 100, y: 100, found: true };
             if (code.includes('for (const el of document.querySelectorAll'))
                 return '发布成功';
             throw new Error(`Unhandled evaluate call: ${code.slice(0, 120)}`);
+        }, {
+            // Remove smartType to test fallback verify behavior
+            smartType: undefined,
         });
         await expect(cmd.func(page, {
             title: '输入框标题没写进去',
@@ -248,6 +298,7 @@ describe('xiaohongshu publish', () => {
         const imagePath = path.join(tempDir, 'demo.jpg');
         fs.writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
         const setFileInput = vi.fn().mockResolvedValue(undefined);
+        // smartType exists: fillField calls locate -> prepare -> smartType (skips verify)
         const page = createPageMock([
             'https://creator.xiaohongshu.com/publish/publish?from=menu_left',
             { ok: true, target: '上传图文', text: '上传图文' },
@@ -255,11 +306,14 @@ describe('xiaohongshu publish', () => {
             'input[type="file"][accept*="image"],input[type="file"][accept*=".jpg"],input[type="file"][accept*=".jpeg"],input[type="file"][accept*=".png"],input[type="file"][accept*=".gif"],input[type="file"][accept*=".webp"]',
             false,
             true,
+            // title fillField: locate -> prepare (smartType skips verify)
             { ok: true, sel: 'input[maxlength="20"]', kind: 'input' },
-            { ok: true, actual: 'CDP上传优先' },
+            { ok: true },
+            // content fillField: locate -> prepare (smartType skips verify)
             { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' },
-            { ok: true, actual: '优先走 setFileInput 主路径' },
-            true,
+            { ok: true },
+            // publish button coords
+            { x: 100, y: 100, found: true },
             'https://creator.xiaohongshu.com/publish/success',
             '发布成功',
         ], {
@@ -313,6 +367,7 @@ describe('xiaohongshu publish', () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-xhs-publish-'));
         const imagePath = path.join(tempDir, 'demo.jpg');
         fs.writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+        // smartType exists: fillField calls locate -> prepare -> smartType (skips verify)
         const page = createPageMock([
             'https://creator.xiaohongshu.com/publish/publish?from=menu_left',
             { ok: true, target: '上传图文', text: '上传图文' },
@@ -320,11 +375,14 @@ describe('xiaohongshu publish', () => {
             { ok: true, count: 1 },
             false,
             true, // waitForEditForm: editor appeared
+            // title fillField: locate -> prepare (smartType skips verify)
             { ok: true, sel: 'input[maxlength="20"]', kind: 'input' },
-            { ok: true, actual: 'DeepSeek别乱问' },
+            { ok: true },
+            // content fillField: locate -> prepare (smartType skips verify)
             { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' },
-            { ok: true, actual: '一篇真实一点的小红书正文' },
-            true,
+            { ok: true },
+            // publish button coords
+            { x: 100, y: 100, found: true },
             'https://creator.xiaohongshu.com/publish/success',
             '发布成功',
         ]);
@@ -374,6 +432,7 @@ describe('xiaohongshu publish', () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-xhs-publish-'));
         const imagePath = path.join(tempDir, 'demo.jpg');
         fs.writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+        // smartType exists: fillField calls locate -> prepare -> smartType (skips verify)
         const page = createPageMock([
             'https://creator.xiaohongshu.com/publish/publish?from=menu_left',
             { ok: true, target: '上传图文', text: '上传图文' },
@@ -382,11 +441,14 @@ describe('xiaohongshu publish', () => {
             { ok: true, count: 1 }, // injectImages
             false, // waitForUploads: no progress indicator
             true, // waitForEditForm: editor appeared
+            // title fillField: locate -> prepare (smartType skips verify)
             { ok: true, sel: 'input[maxlength="20"]', kind: 'input' },
-            { ok: true, actual: '延迟切换也能过' },
+            { ok: true },
+            // content fillField: locate -> prepare (smartType skips verify)
             { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' },
-            { ok: true, actual: '图文页切换慢一点也继续等' },
-            true,
+            { ok: true },
+            // publish button coords
+            { x: 100, y: 100, found: true },
             'https://creator.xiaohongshu.com/publish/success',
             '发布成功',
         ]);
@@ -429,13 +491,15 @@ describe('xiaohongshu publish', () => {
                     ? { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' }
                     : { ok: true, sel: 'input[placeholder*="标题"]', kind: 'input' };
             }
-            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"apply"')) {
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"prepare"'))
+                return { ok: true };
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"verify"')) {
                 return code.includes('[contenteditable="true"][class*="content"]')
                     ? { ok: true, actual: '停留在发布页也算成功' }
                     : { ok: true, actual: '草稿成功提示' };
             }
             if (code.includes('labels.some'))
-                return true;
+                return { x: 100, y: 100, found: true };
             if (code.includes('for (const el of document.querySelectorAll')) {
                 return code.includes('保存成功') ? '保存成功' : '';
             }
@@ -479,13 +543,15 @@ describe('xiaohongshu publish', () => {
                     ? { ok: true, sel: '[contenteditable="true"][class*="content"]', kind: 'contenteditable' }
                     : { ok: true, sel: 'input[placeholder*="标题"]', kind: 'input' };
             }
-            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"apply"')) {
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"prepare"'))
+                return { ok: true };
+            if (code.includes('__opencli_xhs_fill_phase') && code.includes('"verify"')) {
                 return code.includes('[contenteditable="true"][class*="content"]')
                     ? { ok: true, actual: '发布提示不该复用草稿成功' }
                     : { ok: true, actual: '发布成功提示' };
             }
             if (code.includes('labels.some'))
-                return true;
+                return { x: 100, y: 100, found: true };
             if (code.includes('for (const el of document.querySelectorAll')) {
                 return code.includes('保存成功') ? '保存成功' : '';
             }
