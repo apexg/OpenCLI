@@ -18,7 +18,6 @@ docs/.vitepress/cache
 *.zip
 .envrc
 .windsurf
-.claude
 .cortex
 
 # Database files
