@@ -93,4 +93,17 @@ describe('toEnvelope', () => {
         expect(envelope.error.code).toBe('UNKNOWN');
         expect(envelope.error.message).toBe('string error');
     });
+    it('serializes deep cause chains without stack overflow', () => {
+        // Build a 20-level deep cause chain — should truncate at depth 10
+        let deepErr = new Error('root');
+        for (let i = 0; i < 20; i++) {
+            deepErr = new Error(`level-${i}`, { cause: deepErr });
+        }
+        const topErr = new CommandExecutionError('top');
+        topErr.cause = deepErr;
+        const envelope = toEnvelope(topErr);
+        const causeStr = envelope.error.cause ?? '';
+        expect(causeStr).toContain('(cause chain truncated)');
+        expect(causeStr).not.toContain('root'); // root is beyond depth 10
+    });
 });

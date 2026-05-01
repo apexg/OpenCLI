@@ -52,7 +52,7 @@ export function detectProcess(processName) {
 /**
  * Kill a process by name. Sends SIGTERM first, then SIGKILL after grace period.
  */
-export function killProcess(processName) {
+export async function killProcess(processName) {
     if (process.platform === 'win32')
         return; // pkill not available on Windows
     try {
@@ -65,7 +65,7 @@ export function killProcess(processName) {
     while (Date.now() < deadline) {
         if (!detectProcess(processName))
             return;
-        execFileSync('sleep', ['0.2'], { stdio: 'pipe' });
+        await new Promise((r) => setTimeout(r, 200));
     }
     try {
         execFileSync('pkill', ['-9', '-x', processName], { stdio: 'pipe' });
@@ -190,7 +190,7 @@ export async function resolveElectronEndpoint(site) {
             throw new CommandExecutionError(`${label} needs to be restarted with CDP enabled.`, `Manually restart: kill the app and relaunch with --remote-debugging-port=${port}`);
         }
         process.stderr.write(`  Restarting ${label}...\n`);
-        killProcess(processName);
+        await killProcess(processName);
     }
     // Step 3: Discover path
     const appPath = discoverAppPath(label);

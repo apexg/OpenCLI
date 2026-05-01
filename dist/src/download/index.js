@@ -60,94 +60,79 @@ export function requiresYtdlp(url) {
  */
 export async function httpDownload(url, destPath, options = {}, redirectCount = 0) {
     const { cookies, headers = {}, timeout = 30000, onProgress, maxRedirects = 10 } = options;
-    return new Promise((resolve) => {
-        const requestHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-            ...headers,
-        };
-        if (cookies) {
-            requestHeaders['Cookie'] = cookies;
+    const requestHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        ...headers,
+    };
+    if (cookies) {
+        requestHeaders['Cookie'] = cookies;
+    }
+    const tempPath = `${destPath}.tmp`;
+    const cleanupTempFile = async () => {
+        try {
+            await fs.promises.rm(tempPath, { force: true });
         }
-        const tempPath = `${destPath}.tmp`;
-        let settled = false;
-        const finish = (result) => {
-            if (settled)
-                return;
-            settled = true;
-            resolve(result);
-        };
-        const cleanupTempFile = async () => {
-            try {
-                await fs.promises.rm(tempPath, { force: true });
+        catch {
+            // Ignore cleanup errors so the original failure is preserved.
+        }
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+        const response = await fetchWithNodeNetwork(url, {
+            headers: requestHeaders,
+            signal: controller.signal,
+            redirect: 'manual',
+        });
+        clearTimeout(timer);
+        // Handle redirects before creating any file handles.
+        if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get('location');
+            if (location) {
+                if (redirectCount >= maxRedirects) {
+                    return { success: false, size: 0, error: `Too many redirects (> ${maxRedirects})` };
+                }
+                const redirectUrl = resolveRedirectUrl(url, location);
+                const originalHost = new URL(url).hostname;
+                const redirectHost = new URL(redirectUrl).hostname;
+                const redirectOptions = originalHost === redirectHost
+                    ? options
+                    : { ...options, cookies: undefined, headers: stripCookieHeaders(options.headers) };
+                return httpDownload(redirectUrl, destPath, redirectOptions, redirectCount + 1);
             }
-            catch {
-                // Ignore cleanup errors so the original failure is preserved.
-            }
-        };
-        void (async () => {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), timeout);
-            try {
-                const response = await fetchWithNodeNetwork(url, {
-                    headers: requestHeaders,
-                    signal: controller.signal,
-                    redirect: 'manual',
-                });
-                clearTimeout(timer);
-                // Handle redirects before creating any file handles.
-                if (response.status >= 300 && response.status < 400) {
-                    const location = response.headers.get('location');
-                    if (location) {
-                        if (redirectCount >= maxRedirects) {
-                            finish({ success: false, size: 0, error: `Too many redirects (> ${maxRedirects})` });
-                            return;
-                        }
-                        const redirectUrl = resolveRedirectUrl(url, location);
-                        const originalHost = new URL(url).hostname;
-                        const redirectHost = new URL(redirectUrl).hostname;
-                        const redirectOptions = originalHost === redirectHost
-                            ? options
-                            : { ...options, cookies: undefined, headers: stripCookieHeaders(options.headers) };
-                        finish(await httpDownload(redirectUrl, destPath, redirectOptions, redirectCount + 1));
-                        return;
-                    }
-                }
-                if (response.status !== 200) {
-                    finish({ success: false, size: 0, error: `HTTP ${response.status}` });
-                    return;
-                }
-                if (!response.body) {
-                    finish({ success: false, size: 0, error: 'Empty response body' });
-                    return;
-                }
-                const totalSize = parseInt(response.headers.get('content-length') || '0', 10);
-                let received = 0;
-                const progressStream = new Transform({
-                    transform(chunk, _encoding, callback) {
-                        received += chunk.length;
-                        if (onProgress)
-                            onProgress(received, totalSize);
-                        callback(null, chunk);
-                    },
-                });
-                try {
-                    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-                    await pipeline(Readable.fromWeb(response.body), progressStream, fs.createWriteStream(tempPath));
-                    await fs.promises.rename(tempPath, destPath);
-                    finish({ success: true, size: received });
-                }
-                catch (err) {
-                    await cleanupTempFile();
-                    finish({ success: false, size: 0, error: getErrorMessage(err) });
-                }
-            }
-            catch (err) {
-                clearTimeout(timer);
-                await cleanupTempFile();
-                finish({ success: false, size: 0, error: err instanceof Error ? err.message : String(err) });
-            }
-        })();
-    });
+        }
+        if (response.status !== 200) {
+            return { success: false, size: 0, error: `HTTP ${response.status}` };
+        }
+        if (!response.body) {
+            return { success: false, size: 0, error: 'Empty response body' };
+        }
+        const totalSize = parseInt(response.headers.get('content-length') || '0', 10);
+        let received = 0;
+        const progressStream = new Transform({
+            transform(chunk, _encoding, callback) {
+                received += chunk.length;
+                if (onProgress)
+                    onProgress(received, totalSize);
+                callback(null, chunk);
+            },
+        });
+        try {
+            await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+            await pipeline(Readable.fromWeb(response.body), progressStream, fs.createWriteStream(tempPath));
+            await fs.promises.rename(tempPath, destPath);
+            return { success: true, size: received };
+        }
+        catch (err) {
+            await cleanupTempFile();
+            return { success: false, size: 0, error: getErrorMessage(err) };
+        }
+    }
+    catch (err) {
+        clearTimeout(timer);
+        await cleanupTempFile();
+        return { success: false, size: 0, error: err instanceof Error ? err.message : String(err) };
+    }
 }
 export function resolveRedirectUrl(currentUrl, location) {
     return new URL(location, currentUrl).toString();
@@ -172,7 +157,9 @@ export function exportCookiesToNetscape(cookies, filePath) {
         const includeSubdomains = 'TRUE';
         const cookiePath = cookie.path || '/';
         const secure = cookie.secure ? 'TRUE' : 'FALSE';
-        const expiry = Math.floor(Date.now() / 1000) + 86400 * 365; // 1 year from now
+        const expiry = typeof cookie.expirationDate === 'number' && cookie.expirationDate > 0
+            ? Math.floor(cookie.expirationDate)
+            : Math.floor(Date.now() / 1000) + 86400 * 365; // fallback: 1 year from now
         const safeName = cookie.name.replace(/[\t\n\r]/g, '');
         const safeValue = cookie.value.replace(/[\t\n\r]/g, '');
         lines.push(`${domain}\t${includeSubdomains}\t${cookiePath}\t${secure}\t${expiry}\t${safeName}\t${safeValue}`);

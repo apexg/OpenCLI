@@ -56,6 +56,7 @@ export class Page extends BasePage {
         const result = await sendCommandFull('navigate', {
             url,
             ...this._cmdOpts(),
+            ...(options?.allowBoundNavigation === true && { allowBoundNavigation: true }),
         });
         // Remember the page identity (targetId) for subsequent calls
         if (result.page) {

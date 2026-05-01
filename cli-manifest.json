@@ -5640,6 +5640,47 @@
   },
   {
     "site": "douyin",
+    "name": "comment",
+    "description": "对视频发表评论",
+    "domain": "www.douyin.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "aweme_id",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "视频 aweme_id"
+      },
+      {
+        "name": "text",
+        "type": "str",
+        "required": true,
+        "help": "评论内容"
+      },
+      {
+        "name": "reply_id",
+        "type": "str",
+        "default": "",
+        "required": false,
+        "help": "回复的评论 cid（留空为顶级评论）"
+      }
+    ],
+    "columns": [
+      "cid",
+      "text",
+      "aweme_id",
+      "create_time",
+      "digg_count"
+    ],
+    "type": "js",
+    "modulePath": "douyin/comment.js",
+    "sourceFile": "douyin/comment.js",
+    "navigateBefore": "https://www.douyin.com"
+  },
+  {
+    "site": "douyin",
     "name": "delete",
     "description": "删除作品",
     "domain": "creator.douyin.com",
@@ -5796,6 +5837,79 @@
     "modulePath": "douyin/hashtag.js",
     "sourceFile": "douyin/hashtag.js",
     "navigateBefore": "https://creator.douyin.com"
+  },
+  {
+    "site": "douyin",
+    "name": "like-comment",
+    "description": "对评论点赞",
+    "domain": "www.douyin.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "aweme_id",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "视频 aweme_id"
+      },
+      {
+        "name": "cid",
+        "type": "str",
+        "required": true,
+        "help": "评论 cid"
+      },
+      {
+        "name": "undo",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": "取消点赞"
+      }
+    ],
+    "columns": [
+      "aweme_id",
+      "cid",
+      "action",
+      "status"
+    ],
+    "type": "js",
+    "modulePath": "douyin/like-comment.js",
+    "sourceFile": "douyin/like-comment.js",
+    "navigateBefore": "https://www.douyin.com"
+  },
+  {
+    "site": "douyin",
+    "name": "like-video",
+    "description": "对视频点赞",
+    "domain": "www.douyin.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "aweme_id",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "视频 aweme_id"
+      },
+      {
+        "name": "undo",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": "取消点赞"
+      }
+    ],
+    "columns": [
+      "aweme_id",
+      "action",
+      "is_digg"
+    ],
+    "type": "js",
+    "modulePath": "douyin/like-video.js",
+    "sourceFile": "douyin/like-video.js",
+    "navigateBefore": "https://www.douyin.com"
   },
   {
     "site": "douyin",
@@ -5974,6 +6088,41 @@
   },
   {
     "site": "douyin",
+    "name": "search",
+    "description": "根据关键词搜索视频",
+    "domain": "www.douyin.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "keyword",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "搜索关键词"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 10,
+        "required": false,
+        "help": "返回数量（默认10）"
+      }
+    ],
+    "columns": [
+      "aweme_id",
+      "title",
+      "author",
+      "digg_count",
+      "create_time"
+    ],
+    "type": "js",
+    "modulePath": "douyin/search.js",
+    "sourceFile": "douyin/search.js",
+    "navigateBefore": "https://www.douyin.com"
+  },
+  {
+    "site": "douyin",
     "name": "stats",
     "description": "作品数据分析",
     "domain": "creator.douyin.com",
@@ -6084,6 +6233,38 @@
     "type": "js",
     "modulePath": "douyin/user-videos.js",
     "sourceFile": "douyin/user-videos.js",
+    "navigateBefore": "https://www.douyin.com"
+  },
+  {
+    "site": "douyin",
+    "name": "video-detail",
+    "description": "获取视频详情（标题、描述、统计数据）及评论",
+    "domain": "www.douyin.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "aweme_id",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "视频 aweme_id"
+      },
+      {
+        "name": "comments",
+        "type": "int",
+        "default": 5,
+        "required": false,
+        "help": "返回评论数量"
+      }
+    ],
+    "columns": [
+      "key",
+      "value"
+    ],
+    "type": "js",
+    "modulePath": "douyin/video-detail.js",
+    "sourceFile": "douyin/video-detail.js",
     "navigateBefore": "https://www.douyin.com"
   },
   {
@@ -8465,6 +8646,76 @@
   },
   {
     "site": "instagram",
+    "name": "comment-post",
+    "description": "Comment on an Instagram post by shortcode",
+    "domain": "www.instagram.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "shortcode",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Post shortcode or URL"
+      },
+      {
+        "name": "text",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Comment text"
+      }
+    ],
+    "columns": [
+      "status",
+      "shortcode",
+      "text"
+    ],
+    "type": "js",
+    "modulePath": "instagram/comment-post.js",
+    "sourceFile": "instagram/comment-post.js",
+    "navigateBefore": "https://www.instagram.com"
+  },
+  {
+    "site": "instagram",
+    "name": "comments",
+    "description": "Get comments from an Instagram post",
+    "domain": "www.instagram.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "shortcode",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Post shortcode or URL"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 20,
+        "required": false,
+        "help": "Number of comments"
+      }
+    ],
+    "columns": [
+      "index",
+      "id",
+      "user",
+      "text",
+      "likes",
+      "liked",
+      "time"
+    ],
+    "type": "js",
+    "modulePath": "instagram/comments.js",
+    "sourceFile": "instagram/comments.js",
+    "navigateBefore": "https://www.instagram.com"
+  },
+  {
+    "site": "instagram",
     "name": "download",
     "description": "Download images and videos from Instagram posts and reels",
     "domain": "www.instagram.com",
@@ -8617,6 +8868,44 @@
   },
   {
     "site": "instagram",
+    "name": "hashtag",
+    "description": "Search posts by hashtag",
+    "domain": "www.instagram.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "tag",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Hashtag name (without #)"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 20,
+        "required": false,
+        "help": "Number of posts"
+      }
+    ],
+    "columns": [
+      "rank",
+      "shortcode",
+      "user",
+      "caption",
+      "likes",
+      "comments",
+      "type",
+      "url"
+    ],
+    "type": "js",
+    "modulePath": "instagram/hashtag.js",
+    "sourceFile": "instagram/hashtag.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "instagram",
     "name": "like",
     "description": "Like an Instagram post",
     "domain": "www.instagram.com",
@@ -8646,6 +8935,80 @@
     "type": "js",
     "modulePath": "instagram/like.js",
     "sourceFile": "instagram/like.js",
+    "navigateBefore": "https://www.instagram.com"
+  },
+  {
+    "site": "instagram",
+    "name": "like-comment",
+    "description": "Like a comment on an Instagram post (via UI)",
+    "domain": "www.instagram.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "shortcode",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Post shortcode or URL"
+      },
+      {
+        "name": "comment-id",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Comment ID to like"
+      },
+      {
+        "name": "unlike",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Unlike the comment"
+      }
+    ],
+    "columns": [
+      "status",
+      "shortcode",
+      "commentId",
+      "action"
+    ],
+    "type": "js",
+    "modulePath": "instagram/like-comment.js",
+    "sourceFile": "instagram/like-comment.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "instagram",
+    "name": "like-post",
+    "description": "Like an Instagram post by shortcode",
+    "domain": "www.instagram.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "shortcode",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Post shortcode or URL"
+      },
+      {
+        "name": "unlike",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Unlike the post"
+      }
+    ],
+    "columns": [
+      "status",
+      "shortcode",
+      "action"
+    ],
+    "type": "js",
+    "modulePath": "instagram/like-post.js",
+    "sourceFile": "instagram/like-post.js",
     "navigateBefore": "https://www.instagram.com"
   },
   {
@@ -9014,11 +9377,13 @@
     ],
     "columns": [
       "index",
+      "shortcode",
       "caption",
       "likes",
       "comments",
       "type",
-      "date"
+      "date",
+      "url"
     ],
     "type": "js",
     "modulePath": "instagram/user.js",
@@ -14772,6 +15137,95 @@
     "sourceFile": "steam/top-sellers.js"
   },
   {
+    "site": "styleseat",
+    "name": "all-stylists",
+    "description": "从sitemap获取所有美发师信息（全量数据）",
+    "domain": "www.styleseat.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "sitemapLimit",
+        "type": "int",
+        "default": 20,
+        "required": false,
+        "help": "sitemap数量限制（每个约1000人）"
+      },
+      {
+        "name": "stylistLimit",
+        "type": "int",
+        "default": 100,
+        "required": false,
+        "help": "美发师数量限制（总数）"
+      }
+    ],
+    "columns": [
+      "name",
+      "profession",
+      "phone",
+      "address",
+      "rating",
+      "reviews",
+      "badge",
+      "profileUrl",
+      "instagram",
+      "city",
+      "state"
+    ],
+    "type": "js",
+    "modulePath": "styleseat/all-stylists.js",
+    "sourceFile": "styleseat/all-stylists.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "styleseat",
+    "name": "stylists",
+    "description": "获取指定城市美发师列表及联系方式（含Instagram和服务）",
+    "domain": "www.styleseat.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "city",
+        "type": "string",
+        "default": "los-angeles-ca",
+        "required": false,
+        "help": "城市代码"
+      },
+      {
+        "name": "service",
+        "type": "string",
+        "default": "haircut",
+        "required": false,
+        "help": "服务类型"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 10,
+        "required": false,
+        "help": "获取数量"
+      }
+    ],
+    "columns": [
+      "name",
+      "profession",
+      "phone",
+      "address",
+      "rating",
+      "reviews",
+      "badge",
+      "distance",
+      "profileUrl",
+      "instagram",
+      "services"
+    ],
+    "type": "js",
+    "modulePath": "styleseat/stylists.js",
+    "sourceFile": "styleseat/stylists.js",
+    "navigateBefore": true
+  },
+  {
     "site": "substack",
     "name": "feed",
     "description": "Substack 热门文章 Feed",
@@ -17149,61 +17603,6 @@
     "navigateBefore": false
   },
   {
-    "site": "web",
-    "name": "read",
-    "description": "Fetch any web page and export as Markdown",
-    "strategy": "cookie",
-    "browser": true,
-    "args": [
-      {
-        "name": "url",
-        "type": "str",
-        "required": true,
-        "help": "Any web page URL"
-      },
-      {
-        "name": "output",
-        "type": "str",
-        "default": "./web-articles",
-        "required": false,
-        "help": "Output directory"
-      },
-      {
-        "name": "download-images",
-        "type": "boolean",
-        "default": true,
-        "required": false,
-        "help": "Download images locally"
-      },
-      {
-        "name": "wait",
-        "type": "int",
-        "default": 3,
-        "required": false,
-        "help": "Seconds to wait after page load"
-      },
-      {
-        "name": "stdout",
-        "type": "boolean",
-        "default": false,
-        "required": false,
-        "help": "Print markdown to stdout instead of saving to a file"
-      }
-    ],
-    "columns": [
-      "title",
-      "author",
-      "publish_time",
-      "status",
-      "size",
-      "saved"
-    ],
-    "type": "js",
-    "modulePath": "web/read.js",
-    "sourceFile": "web/read.js",
-    "navigateBefore": false
-  },
-  {
     "site": "weibo",
     "name": "comments",
     "description": "Get comments on a Weibo post",
@@ -17472,48 +17871,6 @@
     "modulePath": "weixin/create-draft.js",
     "sourceFile": "weixin/create-draft.js",
     "navigateBefore": false
-  },
-  {
-    "site": "weixin",
-    "name": "download",
-    "description": "下载微信公众号文章为 Markdown 格式",
-    "domain": "mp.weixin.qq.com",
-    "strategy": "cookie",
-    "browser": true,
-    "args": [
-      {
-        "name": "url",
-        "type": "str",
-        "required": true,
-        "help": "WeChat article URL (mp.weixin.qq.com/s/xxx)"
-      },
-      {
-        "name": "output",
-        "type": "str",
-        "default": "./weixin-articles",
-        "required": false,
-        "help": "Output directory"
-      },
-      {
-        "name": "download-images",
-        "type": "boolean",
-        "default": true,
-        "required": false,
-        "help": "Download images locally"
-      }
-    ],
-    "columns": [
-      "title",
-      "author",
-      "publish_time",
-      "status",
-      "size",
-      "saved"
-    ],
-    "type": "js",
-    "modulePath": "weixin/download.js",
-    "sourceFile": "weixin/download.js",
-    "navigateBefore": "https://mp.weixin.qq.com"
   },
   {
     "site": "weixin",
@@ -20376,47 +20733,6 @@
     "modulePath": "zhihu/comment.js",
     "sourceFile": "zhihu/comment.js",
     "navigateBefore": true
-  },
-  {
-    "site": "zhihu",
-    "name": "download",
-    "description": "导出知乎文章为 Markdown 格式",
-    "domain": "zhuanlan.zhihu.com",
-    "strategy": "cookie",
-    "browser": true,
-    "args": [
-      {
-        "name": "url",
-        "type": "str",
-        "required": true,
-        "help": "Article URL (zhuanlan.zhihu.com/p/xxx)"
-      },
-      {
-        "name": "output",
-        "type": "str",
-        "default": "./zhihu-articles",
-        "required": false,
-        "help": "Output directory"
-      },
-      {
-        "name": "download-images",
-        "type": "boolean",
-        "default": false,
-        "required": false,
-        "help": "Download images locally"
-      }
-    ],
-    "columns": [
-      "title",
-      "author",
-      "publish_time",
-      "status",
-      "size"
-    ],
-    "type": "js",
-    "modulePath": "zhihu/download.js",
-    "sourceFile": "zhihu/download.js",
-    "navigateBefore": "https://zhuanlan.zhihu.com"
   },
   {
     "site": "zhihu",

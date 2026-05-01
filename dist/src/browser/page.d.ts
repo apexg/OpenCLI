@@ -31,6 +31,7 @@ export declare class Page extends BasePage {
     goto(url: string, options?: {
         waitUntil?: 'load' | 'none';
         settleMs?: number;
+        allowBoundNavigation?: boolean;
     }): Promise<void>;
     /** Get the active page identity (targetId) */
     getActivePage(): string | undefined;

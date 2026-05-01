@@ -37,6 +37,18 @@ export interface ArticleDownloadOptions {
     detectImageExt?: (url: string) => string;
     /** Custom frontmatter labels (default: Chinese labels) */
     frontmatterLabels?: FrontmatterLabels;
+    /**
+     * Extra CSS selectors removed from the article before Turndown conversion.
+     * Use this to drop site-specific noise the adapter can't always trim upstream
+     * (e.g. zhihu 折叠卡, weixin 赞赏栏, wiki infobox).
+     */
+    cleanSelectors?: string[];
+    /**
+     * Write the markdown to `process.stdout` instead of a file on disk. Image
+     * download and directory creation are skipped — remote image URLs are kept
+     * as-is so the output is self-contained when piped.
+     */
+    stdout?: boolean;
 }
 export interface ArticleDownloadResult {
     title: string;

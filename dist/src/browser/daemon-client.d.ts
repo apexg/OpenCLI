@@ -6,7 +6,7 @@
 import type { BrowserSessionInfo } from '../types.js';
 export interface DaemonCommand {
     id: string;
-    action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'set-file-input' | 'insert-text' | 'bind-current' | 'network-capture-start' | 'network-capture-read' | 'cdp' | 'frames';
+    action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'set-file-input' | 'insert-text' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'cdp' | 'frames';
     /** Target page identity (targetId). Cross-layer contract with the extension. */
     page?: string;
     code?: string;
@@ -34,6 +34,8 @@ export interface DaemonCommand {
     windowFocused?: boolean;
     /** Custom idle timeout in seconds for this workspace session. Overrides the default. */
     idleTimeout?: number;
+    /** Explicitly allow navigation inside a borrowed bound-current tab. */
+    allowBoundNavigation?: boolean;
     /** Frame index for cross-frame operations (0-based, from 'frames' action) */
     frameIndex?: number;
 }
@@ -42,8 +44,15 @@ export interface DaemonResult {
     ok: boolean;
     data?: unknown;
     error?: string;
+    errorCode?: string;
+    errorHint?: string;
     /** Page identity (targetId) — present on page-scoped command responses */
     page?: string;
+}
+export declare class BrowserCommandError extends Error {
+    readonly code?: string | undefined;
+    readonly hint?: string | undefined;
+    constructor(message: string, code?: string | undefined, hint?: string | undefined);
 }
 export interface DaemonStatus {
     ok: boolean;
@@ -93,7 +102,7 @@ export declare function sendCommandFull(action: DaemonCommand['action'], params?
     page?: string;
 }>;
 export declare function listSessions(): Promise<BrowserSessionInfo[]>;
-export declare function bindCurrentTab(workspace: string, opts?: {
+export declare function bindTab(workspace: string, opts?: {
     matchDomain?: string;
     matchPathPrefix?: string;
 }): Promise<unknown>;

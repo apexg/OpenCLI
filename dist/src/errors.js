@@ -107,11 +107,13 @@ export function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
 /** Serialize an error cause chain into a readable string. */
-function serializeCause(cause) {
+function serializeCause(cause, depth = 0) {
+    if (depth > 10)
+        return '(cause chain truncated)';
     if (cause instanceof Error) {
         const parts = [cause.message];
         if (cause.cause)
-            parts.push(`  caused by: ${serializeCause(cause.cause)}`);
+            parts.push(`  caused by: ${serializeCause(cause.cause, depth + 1)}`);
         return parts.join('\n');
     }
     return String(cause);

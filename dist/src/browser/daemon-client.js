@@ -13,6 +13,16 @@ let _idCounter = 0;
 function generateId() {
     return `cmd_${process.pid}_${Date.now()}_${++_idCounter}`;
 }
+export class BrowserCommandError extends Error {
+    code;
+    hint;
+    constructor(message, code, hint) {
+        super(message);
+        this.code = code;
+        this.hint = hint;
+        this.name = 'BrowserCommandError';
+    }
+}
 async function requestDaemon(pathname, init) {
     const { timeout = 2000, headers, ...rest } = init ?? {};
     const controller = new AbortController();
@@ -95,7 +105,7 @@ async function sendCommandRaw(action, params) {
                     await sleep(advice.delayMs);
                     continue;
                 }
-                throw new Error(result.error ?? 'Daemon command failed');
+                throw new BrowserCommandError(result.error ?? 'Daemon command failed', result.errorCode, result.errorHint);
             }
             return result;
         }
@@ -130,6 +140,6 @@ export async function listSessions() {
     const result = await sendCommand('sessions');
     return Array.isArray(result) ? result : [];
 }
-export async function bindCurrentTab(workspace, opts = {}) {
-    return sendCommand('bind-current', { workspace, ...opts });
+export async function bindTab(workspace, opts = {}) {
+    return sendCommand('bind', { workspace, ...opts });
 }

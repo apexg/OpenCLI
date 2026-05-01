@@ -1,6 +1,6 @@
-# Douyin (抖音创作者中心)
+# Douyin
 
-**Mode**: 🔐 Browser · **Domain**: `creator.douyin.com`
+**Mode**: 🔐 Browser · **Domain**: `creator.douyin.com` / `www.douyin.com`
 
 ## Commands
 
@@ -8,6 +8,7 @@
 |---------|-------------|
 | `opencli douyin profile` | 获取账号信息 |
 | `opencli douyin videos` | 获取作品列表 |
+| `opencli douyin video-detail` | 获取视频详情（标题、描述、统计数据）及评论 |
 | `opencli douyin drafts` | 获取草稿列表 |
 | `opencli douyin draft` | 上传视频并保存为草稿 |
 | `opencli douyin publish` | 定时发布视频到抖音 |
@@ -17,9 +18,13 @@
 | `opencli douyin collections` | 获取合集列表 |
 | `opencli douyin activities` | 获取官方活动列表 |
 | `opencli douyin location` | 搜索发布可用的地理位置 |
+| `opencli douyin search` | 根据关键词搜索视频 |
 | `opencli douyin hashtag search` | 按关键词搜索话题 |
 | `opencli douyin hashtag suggest` | 基于封面 URI 推荐话题 |
 | `opencli douyin hashtag hot` | 获取热点词 |
+| `opencli douyin comment` | 对视频发表评论 |
+| `opencli douyin like-video` | 对视频点赞 |
+| `opencli douyin like-comment` | 对评论点赞 |
 
 ## Usage Examples
 
@@ -30,12 +35,20 @@ opencli douyin videos --limit 10
 opencli douyin videos --status scheduled
 opencli douyin drafts
 
+# 视频详情与评论
+opencli douyin video-detail 7601066327335390510
+opencli douyin video-detail 7601066327335390510 --comments 10
+
 # 发布前辅助信息
 opencli douyin collections
 opencli douyin activities
 opencli douyin location "东京塔"
 opencli douyin hashtag search "春游"
 opencli douyin hashtag hot --limit 10
+
+# 搜索视频
+opencli douyin search "豪车" --limit 10
+opencli douyin search "春游" --limit 5
 
 # 保存草稿
 opencli douyin draft ./video.mp4 \
@@ -53,6 +66,16 @@ opencli douyin publish ./video.mp4 \
   --title "春游 vlog" \
   --schedule 1775617200
 
+# 评论
+opencli douyin comment 7601066327335390510 --text "很棒的内容！"
+opencli douyin comment 7601066327335390510 --text "说得对" --reply_id 7604381209829868288
+
+# 点赞
+opencli douyin like-video 7601066327335390510
+opencli douyin like-video 7601066327335390510 --undo
+opencli douyin like-comment 7601066327335390510 --cid 7604381209829868288
+opencli douyin like-comment 7601066327335390510 --cid 7604381209829868288 --undo
+
 # 更新与删除
 opencli douyin update 1234567890 --caption "更新后的文案"
 opencli douyin update 1234567890 --reschedule "2026-04-09T20:00:00+09:00"
@@ -64,7 +87,7 @@ opencli douyin profile -f json
 
 ## Prerequisites
 
-- Chrome running and **logged into** `creator.douyin.com`
+- Chrome running and **logged into** `www.douyin.com` (for `comment`, `like-video`, `like-comment`, `video-detail`) or `creator.douyin.com` (for creator commands)
 - The logged-in account must have access to Douyin Creator Center publishing features
 - [Browser Bridge extension](/guide/browser-bridge) installed
 
@@ -73,3 +96,7 @@ opencli douyin profile -f json
 - `publish` requires `--schedule` to be at least 2 hours later and no more than 14 days later
 - `draft` and `publish` upload the video through Douyin/ByteDance browser-authenticated APIs, so cookies in the active browser session must be valid
 - `hashtag suggest` expects a valid `cover`/`cover_uri` value produced during the publish pipeline; for normal manual use, `hashtag search` and `hashtag hot` are usually more convenient
+- `comment --reply_id` replies to a specific comment (cid), omit for a top-level comment
+- `like-video --undo` and `like-comment --undo` cancel a previous like
+- `video-detail --comments N` controls how many comments to return (default 5, max 50)
+- `search` uses the Douyin web search API to find videos by keyword

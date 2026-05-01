@@ -9,7 +9,8 @@
  *   1. Origin check — reject HTTP/WS from non chrome-extension:// origins
  *   2. Custom header — require X-OpenCLI header (browsers can't send it
  *      without CORS preflight, which we deny)
- *   3. No CORS headers — responses never include Access-Control-Allow-Origin
+ *   3. No CORS headers on command endpoints — only /ping is readable from the
+ *      Browser Bridge extension origin so the extension can probe daemon reachability
  *   4. Body size limit — 1 MB max to prevent OOM
  *   5. WebSocket verifyClient — reject upgrade before connection is established
  *
@@ -18,4 +19,4 @@
  *   - Persistent — stays alive until explicit shutdown, SIGTERM, or uninstall
  *   - Listens on localhost:19825
  */
-export {};
+export declare function getResponseCorsHeaders(pathname: string, origin?: string): Record<string, string> | undefined;

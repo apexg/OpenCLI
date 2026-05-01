@@ -8,6 +8,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import TurndownService from 'turndown';
+import { gfm } from 'turndown-plugin-gfm';
 import { httpDownload, sanitizeFilename } from './index.js';
 import { formatBytes } from './progress.js';
 const IMAGE_CONCURRENCY = 5;
@@ -19,22 +20,127 @@ const DEFAULT_LABELS = {
 // ============================================================
 // Markdown Conversion
 // ============================================================
-function createTurndown(configure) {
+// Nodes that never carry article content. Turndown keeps them by default — if an
+// adapter's contentHtml extraction misses one, CSS / scripts / widget markup
+// ends up inline in the .md. Strip them unconditionally at the converter level.
+// `svg` is not in HTMLElementTagNameMap, so we type-narrow manually.
+// `header/footer/nav/aside` cover page chrome that adapters occasionally
+// forget to trim — the article's own title/author/publishTime are supplied
+// as separate fields on ArticleData, so duplicated nodes are redundant.
+// `iframe` is NOT in this set — it's handled by a dedicated rule below that
+// degrades to a link so embedded content (YouTube, Twitter, CodePen …) keeps
+// a reachable URL in the exported markdown.
+const STRIPPED_TAGS = [
+    'script', 'style', 'noscript',
+    'canvas',
+    'form', 'button', 'dialog',
+    'header', 'footer', 'nav', 'aside',
+];
+function createTurndown(configure, cleanSelectors) {
     const td = new TurndownService({
         headingStyle: 'atx',
         codeBlockStyle: 'fenced',
         bulletListMarker: '-',
     });
+    td.use(gfm);
+    td.remove(STRIPPED_TAGS);
+    // turndown-plugin-gfm@1.0.2 emits single-tilde strikethrough (`~x~`), which
+    // is not the canonical GFM form. Override it so exported markdown is
+    // portable across common renderers.
+    td.addRule('canonicalStrikethrough', {
+        filter: (node) => ['DEL', 'S', 'STRIKE'].includes(node.nodeName),
+        replacement: (content) => `~~${content}~~`,
+    });
+    // SVG isn't in the static HTML tag map; match by name with a custom filter.
+    td.addRule('stripSvg', {
+        filter: (node) => node.nodeName === 'svg' || node.nodeName === 'SVG',
+        replacement: () => '',
+    });
     td.addRule('linebreak', {
         filter: 'br',
         replacement: () => '\n',
     });
+    // Inline base64 images would land as huge `![](data:image/...;base64,...)`
+    // strings that the image downloader can't localize. Drop them.
+    td.addRule('ignoreBase64Images', {
+        filter: (node) => {
+            if (node.nodeName !== 'IMG')
+                return false;
+            const src = node.getAttribute?.('src') ?? '';
+            return src.startsWith('data:');
+        },
+        replacement: () => '',
+    });
+    // Markdown has no native video/audio primitive. Emit inline HTML so
+    // renderers that support it (GitHub, VS Code preview …) still play the
+    // media; viewers that don't simply show the tag as text, which is still
+    // more information than dropping the node outright.
+    td.addRule('videoElement', {
+        filter: (node) => node.nodeName === 'VIDEO',
+        replacement: (_content, node) => {
+            const el = node;
+            const src = el.getAttribute('src')
+                || el.querySelector('source')?.getAttribute('src')
+                || '';
+            if (!src)
+                return '';
+            const poster = el.getAttribute('poster') || '';
+            return `\n<video src="${src}" controls${poster ? ` poster="${poster}"` : ''}></video>\n`;
+        },
+    });
+    td.addRule('audioElement', {
+        filter: (node) => node.nodeName === 'AUDIO',
+        replacement: (_content, node) => {
+            const el = node;
+            const src = el.getAttribute('src')
+                || el.querySelector('source')?.getAttribute('src')
+                || '';
+            return src ? `\n<audio src="${src}" controls></audio>\n` : '';
+        },
+    });
+    // Iframes (YouTube, Twitter, CodePen …) degrade to a markdown link so the
+    // embedded resource is still reachable from the exported file.
+    td.addRule('iframeToLink', {
+        filter: (node) => node.nodeName === 'IFRAME',
+        replacement: (_content, node) => {
+            const el = node;
+            const src = el.getAttribute('src') || '';
+            if (!src)
+                return '';
+            const title = el.getAttribute('title') || 'Embedded content';
+            return `\n[${title}](${src})\n`;
+        },
+    });
+    // Per-adapter dirty-node removal. Adapters know their site's specific noise
+    // (zhihu 折叠卡, weixin 赞赏栏, wiki 折叠 infobox …); we keep the default set
+    // empty so the generic converter stays untouched.
+    const selectorRules = (cleanSelectors ?? [])
+        .map(sel => sel.trim())
+        .filter(Boolean);
+    if (selectorRules.length > 0) {
+        td.addRule('cleanSelectors', {
+            filter: (node) => {
+                const match = node.matches;
+                if (typeof match !== 'function')
+                    return false;
+                return selectorRules.some((sel) => {
+                    try {
+                        return match.call(node, sel);
+                    }
+                    catch {
+                        return false;
+                    }
+                });
+            },
+            replacement: () => '',
+        });
+    }
     if (configure)
         configure(td);
     return td;
 }
-function convertToMarkdown(contentHtml, codeBlocks, configure) {
-    const td = createTurndown(configure);
+function convertToMarkdown(contentHtml, codeBlocks, configure, cleanSelectors) {
+    const td = createTurndown(configure, cleanSelectors);
     let md = td.turndown(contentHtml);
     // Restore code block placeholders
     codeBlocks.forEach((block, i) => {
@@ -44,8 +150,12 @@ function convertToMarkdown(contentHtml, codeBlocks, configure) {
     });
     // Clean up
     md = md.replace(/\u00a0/g, ' ');
-    md = md.replace(/\n{4,}/g, '\n\n\n');
+    // Turndown leaves behind lone dashes / middle dots when list bullets or
+    // decorative separators lose their surrounding inline context.
+    md = md.replace(/^[ \t]*[-·][ \t]*$/gm, '');
+    md = md.replace(/^[ \t]+$/gm, '');
     md = md.replace(/[ \t]+$/gm, '');
+    md = md.replace(/\n{3,}/g, '\n\n');
     return md;
 }
 function replaceImageUrls(md, urlMap) {
@@ -120,7 +230,7 @@ async function downloadImages(imgUrls, imgDir, headers, detectExt) {
  * 6. File write
  */
 export async function downloadArticle(data, options) {
-    const { output, downloadImages: shouldDownloadImages = true, imageHeaders, maxTitleLength = 80, configureTurndown, detectImageExt, frontmatterLabels, } = options;
+    const { output, downloadImages: shouldDownloadImages = true, imageHeaders, maxTitleLength = 80, configureTurndown, detectImageExt, frontmatterLabels, cleanSelectors, stdout = false, } = options;
     const labels = { ...DEFAULT_LABELS, ...frontmatterLabels };
     if (!data.title) {
         return [{
@@ -143,33 +253,47 @@ export async function downloadArticle(data, options) {
             }];
     }
     // Convert HTML to Markdown
-    let markdown = convertToMarkdown(data.contentHtml, data.codeBlocks || [], configureTurndown);
-    // Prepare output directory
+    let markdown = convertToMarkdown(data.contentHtml, data.codeBlocks || [], configureTurndown, cleanSelectors);
     const safeTitle = sanitizeFilename(data.title, maxTitleLength);
-    const articleDir = path.join(output, safeTitle);
-    fs.mkdirSync(articleDir, { recursive: true });
-    // Download images
-    if (shouldDownloadImages && data.imageUrls && data.imageUrls.length > 0) {
+    // Download images only when writing to disk. In stdout mode remote URLs
+    // stay intact so the piped output is self-contained.
+    if (!stdout && shouldDownloadImages && data.imageUrls && data.imageUrls.length > 0) {
+        const articleDir = path.join(output, safeTitle);
+        fs.mkdirSync(articleDir, { recursive: true });
         const imagesDir = path.join(articleDir, 'images');
         fs.mkdirSync(imagesDir, { recursive: true });
         const urlMap = await downloadImages(data.imageUrls, imagesDir, imageHeaders, detectImageExt);
         markdown = replaceImageUrls(markdown, urlMap);
     }
-    // Build frontmatter with customizable labels
-    const headerLines = [`# ${data.title}`, ''];
+    // Build frontmatter with customizable labels.
+    // Shape: `# Title\n[> meta\n...]\n---\n\n<markdown>` — exactly one blank
+    // line separates every section, so we never produce ≥3 consecutive newlines.
+    const headerLines = [`# ${data.title}`];
     if (data.author)
         headerLines.push(`> ${labels.author}: ${data.author}`);
     if (data.publishTime)
         headerLines.push(`> ${labels.publishTime}: ${data.publishTime}`);
     if (data.sourceUrl)
         headerLines.push(`> ${labels.sourceUrl}: ${data.sourceUrl}`);
-    headerLines.push('', '---', '');
-    const fullContent = headerLines.join('\n') + markdown;
-    // Write file
+    const frontmatter = headerLines.join('\n') + '\n\n---\n\n';
+    const fullContent = frontmatter + markdown;
+    const size = Buffer.byteLength(fullContent, 'utf-8');
+    if (stdout) {
+        process.stdout.write(fullContent.endsWith('\n') ? fullContent : fullContent + '\n');
+        return [{
+                title: data.title,
+                author: data.author || '-',
+                publish_time: data.publishTime || '-',
+                status: 'success',
+                size: formatBytes(size),
+                saved: '-',
+            }];
+    }
+    const articleDir = path.join(output, safeTitle);
+    fs.mkdirSync(articleDir, { recursive: true });
     const filename = `${safeTitle}.md`;
     const filePath = path.join(articleDir, filename);
     fs.writeFileSync(filePath, fullContent, 'utf-8');
-    const size = Buffer.byteLength(fullContent, 'utf-8');
     return [{
             title: data.title,
             author: data.author || '-',

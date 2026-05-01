@@ -83,9 +83,11 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^28.0.1",
     "@types/node": "^25.5.2",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.5.13",
+    "jsdom": "^29.1.0",
     "tsx": "^4.19.3",
     "typescript": "^6.0.3",
     "vitepress": "^1.6.4",

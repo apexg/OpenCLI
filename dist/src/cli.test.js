@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { BrowserCommandError } from './browser/daemon-client.js';
 import { TargetError } from './browser/target-errors.js';
-const { mockBrowserConnect, mockBrowserClose, browserState, } = vi.hoisted(() => ({
+const { mockBrowserConnect, mockBrowserClose, mockBindTab, mockSendCommand, browserState, } = vi.hoisted(() => ({
     mockBrowserConnect: vi.fn(),
     mockBrowserClose: vi.fn(),
+    mockBindTab: vi.fn(),
+    mockSendCommand: vi.fn(),
     browserState: { page: null },
 }));
 vi.mock('./browser/index.js', () => {
@@ -15,6 +18,14 @@ vi.mock('./browser/index.js', () => {
             connect = mockBrowserConnect;
             close = mockBrowserClose;
         },
+    };
+});
+vi.mock('./browser/daemon-client.js', async () => {
+    const actual = await vi.importActual('./browser/daemon-client.js');
+    return {
+        ...actual,
+        bindTab: mockBindTab,
+        sendCommand: mockSendCommand,
     };
 });
 import { createProgram, findPackageRoot, normalizeVerifyRows, renderVerifyPreview, resolveBrowserVerifyInvocation } from './cli.js';
@@ -95,6 +106,13 @@ describe('browser tab targeting commands', () => {
         stderrSpy.mockClear();
         mockBrowserConnect.mockClear();
         mockBrowserClose.mockReset().mockResolvedValue(undefined);
+        mockBindTab.mockReset().mockResolvedValue({
+            workspace: 'bound:default',
+            page: 'tab-2',
+            url: 'https://user.example/inbox',
+            title: 'Inbox',
+        });
+        mockSendCommand.mockReset().mockResolvedValue({ closed: true });
         browserState.page = {
             goto: vi.fn().mockResolvedValue(undefined),
             wait: vi.fn().mockResolvedValue(undefined),
@@ -104,6 +122,7 @@ describe('browser tab targeting commands', () => {
             startNetworkCapture: vi.fn().mockResolvedValue(true),
             getCookies: vi.fn().mockResolvedValue([]),
             evaluate: vi.fn().mockResolvedValue({ ok: true }),
+            snapshot: vi.fn().mockResolvedValue('snapshot'),
             tabs: vi.fn().mockResolvedValue([
                 { index: 0, page: 'tab-1', url: 'https://one.example', title: 'one', active: true },
                 { index: 1, page: 'tab-2', url: 'https://two.example', title: 'two', active: false },
@@ -127,6 +146,62 @@ describe('browser tab targeting commands', () => {
             throw new Error(`Expected string arg to console.log, got ${typeof last}`);
         return JSON.parse(last);
     }
+    it('binds the current Chrome tab into a bound workspace', async () => {
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', 'bind', '--domain', 'user.example', '--path-prefix', '/inbox']);
+        expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, workspace: 'bound:default' });
+        expect(mockBindTab).toHaveBeenCalledWith('bound:default', {
+            matchDomain: 'user.example',
+            matchPathPrefix: '/inbox',
+        });
+        const out = lastJsonLog();
+        expect(out.workspace).toBe('bound:default');
+        expect(out.url).toBe('https://user.example/inbox');
+    });
+    it('rejects bind workspaces outside the bound namespace', async () => {
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', 'bind', '--workspace', 'browser:default']);
+        expect(mockBrowserConnect).not.toHaveBeenCalled();
+        expect(mockBindTab).not.toHaveBeenCalled();
+        const out = lastJsonLog();
+        expect(out.error.code).toBe('invalid_bind_workspace');
+        expect(process.exitCode).toBeDefined();
+    });
+    it('runs browser commands against an explicit bound workspace', async () => {
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', '--workspace', 'bound:default', 'state']);
+        expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, workspace: 'bound:default' });
+        expect(browserState.page?.snapshot).toHaveBeenCalled();
+    });
+    it('blocks history navigation on bound workspaces unless explicitly allowed', async () => {
+        browserState.page = {
+            ...browserState.page,
+            workspace: 'bound:default',
+            evaluate: vi.fn(),
+            wait: vi.fn(),
+        };
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', '--workspace', 'bound:default', 'back']);
+        expect(browserState.page?.evaluate).not.toHaveBeenCalled();
+        const out = lastJsonLog();
+        expect(out.error.code).toBe('bound_navigation_blocked');
+    });
+    it('unbinds a bound workspace through the daemon close-window command', async () => {
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', 'unbind', '--workspace', 'bound:default']);
+        expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, workspace: 'bound:default' });
+        expect(mockSendCommand).toHaveBeenCalledWith('close-window', { workspace: 'bound:default' });
+        const out = lastJsonLog();
+        expect(out).toEqual({ unbound: true, workspace: 'bound:default' });
+    });
+    it('does not print false success when unbind fails', async () => {
+        mockSendCommand.mockRejectedValueOnce(new BrowserCommandError('Workspace "bound:default" is not attached to a tab.', 'bound_session_missing', 'Run bind again, then retry the browser command.'));
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', 'unbind', '--workspace', 'bound:default']);
+        const out = lastJsonLog();
+        expect(out.error.code).toBe('bound_session_missing');
+        expect(process.exitCode).toBeDefined();
+    });
     it('binds browser commands to an explicit target tab via --tab', async () => {
         const program = createProgram('', '');
         await program.parseAsync(['node', 'opencli', 'browser', 'eval', '--tab', 'tab-2', 'document.title']);
@@ -446,6 +521,9 @@ describe('browser network command', () => {
     function getNetworkCachePath(cacheDir) {
         return path.join(cacheDir, 'browser-network', 'browser_default.json');
     }
+    function getBoundNetworkCachePath(cacheDir) {
+        return path.join(cacheDir, 'browser-network', 'bound_default.json');
+    }
     function lastJsonLog() {
         const calls = consoleLogSpy.mock.calls;
         if (calls.length === 0)
@@ -496,6 +574,19 @@ describe('browser network command', () => {
         expect(out.entries[0]).not.toHaveProperty('body');
         expect(fs.existsSync(getNetworkCachePath(cacheDir))).toBe(true);
     });
+    it('uses the selected browser workspace for network cache scope', async () => {
+        const cacheDir = String(process.env.OPENCLI_CACHE_DIR);
+        browserState.page = {
+            ...browserState.page,
+            workspace: 'bound:default',
+        };
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', '--workspace', 'bound:default', 'network']);
+        const out = lastJsonLog();
+        expect(out.workspace).toBe('bound:default');
+        expect(fs.existsSync(getBoundNetworkCachePath(cacheDir))).toBe(true);
+        expect(fs.existsSync(getNetworkCachePath(cacheDir))).toBe(false);
+    });
     it('--all includes static resources that the default filter drops', async () => {
         const program = createProgram('', '');
         await program.parseAsync(['node', 'opencli', 'browser', 'network', '--all']);
@@ -503,6 +594,32 @@ describe('browser network command', () => {
         expect(out.count).toBe(2);
         expect(out.entries.map((e) => e.key)).toContain('UserTweets');
         expect(out.entries.map((e) => e.key)).toContain('GET cdn.example.com/app.js');
+    });
+    it('default output keeps text/javascript API responses while dropping static JS files', async () => {
+        browserState.page.readNetworkCapture = vi.fn().mockResolvedValue([
+            {
+                url: 'https://hw.mail.163.com/js6/s?sid=abc&func=mbox:listMessages',
+                method: 'POST',
+                responseStatus: 200,
+                responseContentType: 'text/javascript',
+                responsePreview: JSON.stringify({ messages: [{ id: 'm1', subject: 'hello' }] }),
+            },
+            {
+                url: 'https://cdn.example.com/app.js',
+                method: 'GET',
+                responseStatus: 200,
+                responseContentType: 'application/javascript',
+                responsePreview: '// js',
+            },
+        ]);
+        const program = createProgram('', '');
+        await program.parseAsync(['node', 'opencli', 'browser', 'network']);
+        const out = lastJsonLog();
+        expect(out.count).toBe(1);
+        expect(out.filtered_out).toBe(1);
+        expect(out.entries[0].key).toBe('POST hw.mail.163.com/js6/s');
+        expect(out.entries[0].ct).toBe('text/javascript');
+        expect(out.entries[0].shape['$.messages']).toBe('array(1)');
     });
     it('--raw emits full bodies inline for every entry', async () => {
         const program = createProgram('', '');

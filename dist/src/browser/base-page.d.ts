@@ -28,6 +28,7 @@ export declare abstract class BasePage implements IPage {
     abstract goto(url: string, options?: {
         waitUntil?: 'load' | 'none';
         settleMs?: number;
+        allowBoundNavigation?: boolean;
     }): Promise<void>;
     abstract evaluate(js: string): Promise<unknown>;
     /**

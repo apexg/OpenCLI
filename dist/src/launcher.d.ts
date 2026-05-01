@@ -22,7 +22,7 @@ export declare function detectProcess(processName: string): boolean;
 /**
  * Kill a process by name. Sends SIGTERM first, then SIGKILL after grace period.
  */
-export declare function killProcess(processName: string): void;
+export declare function killProcess(processName: string): Promise<void>;
 /**
  * Discover the app installation path on macOS.
  * Uses osascript to resolve the app name to a POSIX path.

@@ -8,7 +8,7 @@ cli({
         { name: 'username', required: true, positional: true, help: 'Instagram username' },
         { name: 'limit', type: 'int', default: 12, help: 'Number of posts' },
     ],
-    columns: ['index', 'caption', 'likes', 'comments', 'type', 'date'],
+    columns: ['index', 'shortcode', 'caption', 'likes', 'comments', 'type', 'date', 'url'],
     pipeline: [
         { navigate: 'https://www.instagram.com' },
         { evaluate: `(async () => {
@@ -36,11 +36,13 @@ cli({
   const d2 = await r2.json();
   return (d2?.items || []).slice(0, limit).map((p, i) => ({
     index: i + 1,
+    shortcode: p.code || '',
     caption: (p.caption?.text || '').replace(/\\n/g, ' ').substring(0, 100),
     likes: p.like_count ?? 0,
     comments: p.comment_count ?? 0,
     type: p.media_type === 1 ? 'photo' : p.media_type === 2 ? 'video' : 'carousel',
     date: p.taken_at ? new Date(p.taken_at * 1000).toLocaleDateString() : '',
+    url: 'https://www.instagram.com/p/' + (p.code || '') + '/',
   }));
 })()
 ` },

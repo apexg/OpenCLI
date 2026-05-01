@@ -42,6 +42,7 @@ export interface IPage {
     goto(url: string, options?: {
         waitUntil?: 'load' | 'none';
         settleMs?: number;
+        allowBoundNavigation?: boolean;
     }): Promise<void>;
     evaluate(js: string): Promise<any>;
     /** Safely evaluate JS with pre-serialized arguments — prevents injection. */
