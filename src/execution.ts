@@ -199,14 +199,13 @@ export async function executeCommand(
 
       ensureRequiredEnv(cmd);
       const BrowserFactory = getBrowserFactory(cmd.site);
+      const preNavUrl = resolvePreNav(cmd);
       result = await browserSession(BrowserFactory, async (page) => {
-        const preNavUrl = resolvePreNav(cmd);
         if (preNavUrl) {
-          // Navigate directly — the extension's handleNavigate already has a fast-path
-          // that skips navigation if the tab is already at the target URL.
-          // This avoids an extra exec round-trip (getCurrentUrl) on first command and
-          // lets the extension create the automation window with the target URL directly
-          // instead of about:blank.
+          // If the page was opened at the target URL (via initialUrl in CDP connect),
+          // it's already there — but we still call goto() to ensure the page is fully
+          // loaded (DOMContentLoaded + DOM settle). For CDP, the target is created with
+          // the URL, but the page may still be loading when we get the WebSocket.
           try {
             await page.goto(preNavUrl);
           } catch (err) {
@@ -242,7 +241,7 @@ export async function executeCommand(
           if (!keepOpen) await page.closeWindow?.().catch(() => {});
           throw err;
         }
-      }, { workspace: `site:${cmd.site}`, cdpEndpoint });
+      }, { workspace: `site:${cmd.site}`, cdpEndpoint, initialUrl: preNavUrl ?? undefined });
     } else {
       // Non-browser commands: apply timeout only when explicitly configured.
       const timeout = cmd.timeoutSeconds;

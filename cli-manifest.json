@@ -5641,7 +5641,7 @@
   {
     "site": "douyin",
     "name": "comment",
-    "description": "对视频发表评论",
+    "description": "对视频发表评论或回复评论",
     "domain": "www.douyin.com",
     "strategy": "cookie",
     "browser": true,
@@ -5671,6 +5671,7 @@
       "cid",
       "text",
       "aweme_id",
+      "reply_id",
       "create_time",
       "digg_count"
     ],
@@ -5841,7 +5842,7 @@
   {
     "site": "douyin",
     "name": "like-comment",
-    "description": "对评论点赞",
+    "description": "对评论点赞或取消点赞",
     "domain": "www.douyin.com",
     "strategy": "cookie",
     "browser": true,
@@ -5881,7 +5882,7 @@
   {
     "site": "douyin",
     "name": "like-video",
-    "description": "对视频点赞",
+    "description": "对视频点赞或取消点赞",
     "domain": "www.douyin.com",
     "strategy": "cookie",
     "browser": true,

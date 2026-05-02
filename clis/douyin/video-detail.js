@@ -1,5 +1,6 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { ArgumentError } from '@jackwener/opencli/errors';
+import { browserFetch } from './_shared/browser-fetch.js';
+import { ArgumentError, CommandExecutionError } from '@jackwener/opencli/errors';
 cli({
     site: 'douyin',
     name: 'video-detail',
@@ -15,19 +16,11 @@ cli({
         if (kwargs.comments < 0 || kwargs.comments > 50) {
             throw new ArgumentError('评论数量范围: 0-50');
         }
-        const detailJs = `
-      (async () => {
-        const res = await fetch('https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${kwargs.aweme_id}&aid=6383', {
-          credentials: 'include',
-          headers: { referer: 'https://www.douyin.com/' }
-        });
-        return res.json();
-      })()
-    `;
-        const detailRes = await page.evaluate(detailJs);
+        const detailUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${kwargs.aweme_id}&aid=6383`;
+        const detailRes = await browserFetch(page, 'GET', detailUrl);
         const item = detailRes.aweme_detail;
         if (!item) {
-            throw new Error(`未找到视频: ${kwargs.aweme_id}`);
+            throw new CommandExecutionError('未找到视频', kwargs.aweme_id);
         }
         const rows = [
             { key: 'aweme_id', value: item.aweme_id },
@@ -40,16 +33,8 @@ cli({
             { key: 'share_count', value: String(item.statistics?.share_count ?? 0) },
         ];
         if (kwargs.comments > 0) {
-            const commentJs = `
-        (async () => {
-          const res = await fetch('https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=${kwargs.aweme_id}&count=${kwargs.comments}&cursor=0&aid=6383', {
-            credentials: 'include',
-            headers: { referer: 'https://www.douyin.com/' }
-          });
-          return res.json();
-        })()
-      `;
-            const commentRes = await page.evaluate(commentJs);
+            const commentUrl = `https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=${kwargs.aweme_id}&count=${kwargs.comments}&cursor=0&aid=6383`;
+            const commentRes = await browserFetch(page, 'GET', commentUrl);
             const comments = commentRes.comments ?? [];
             rows.push({ key: '--- comments ---', value: '' });
             for (const c of comments) {

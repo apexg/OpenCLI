@@ -1,9 +1,10 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { ArgumentError } from '@jackwener/opencli/errors';
+import { browserFetch } from './_shared/browser-fetch.js';
+import { CommandExecutionError } from '@jackwener/opencli/errors';
 cli({
     site: 'douyin',
     name: 'like-comment',
-    description: '对评论点赞',
+    description: '对评论点赞或取消点赞',
     domain: 'www.douyin.com',
     strategy: Strategy.COOKIE,
     args: [
@@ -13,31 +14,14 @@ cli({
     ],
     columns: ['aweme_id', 'cid', 'action', 'status'],
     func: async (page, kwargs) => {
-        const diggType = kwargs.undo ? '0' : '1';
         const body = new URLSearchParams({
             aweme_id: kwargs.aweme_id,
             cid: kwargs.cid,
-            digg_type: diggType,
+            digg_type: kwargs.undo ? '0' : '1',
             aid: '6383',
         }).toString();
-        const js = `
-      (async () => {
-        const res = await fetch('https://www.douyin.com/aweme/v1/web/comment/digg/?aid=6383', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            referer: 'https://www.douyin.com/'
-          },
-          body: ${JSON.stringify(body)}
-        });
-        return res.json();
-      })()
-    `;
-        const res = await page.evaluate(js);
-        if (res.status_code !== 0) {
-            throw new Error(`评论点赞失败: ${res.status_msg ?? JSON.stringify(res)}`);
-        }
+        const url = 'https://www.douyin.com/aweme/v1/web/comment/digg/?aid=6383';
+        const res = await browserFetch(page, 'POST', url, { formBody: body });
         return [{
                 aweme_id: kwargs.aweme_id,
                 cid: kwargs.cid,

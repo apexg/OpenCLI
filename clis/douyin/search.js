@@ -1,4 +1,5 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
+import { browserFetch } from './_shared/browser-fetch.js';
 import { ArgumentError } from '@jackwener/opencli/errors';
 cli({
     site: 'douyin',
@@ -15,19 +16,8 @@ cli({
         if (kwargs.limit < 1 || kwargs.limit > 50) {
             throw new ArgumentError('limit 范围: 1-50');
         }
-        const js = `
-      (async () => {
-        const res = await fetch('https://www.douyin.com/aweme/v1/web/search/item/?keyword=${encodeURIComponent(kwargs.keyword)}&count=${kwargs.limit}&aid=1128', {
-          credentials: 'include',
-          headers: { referer: 'https://www.douyin.com/' }
-        });
-        return res.json();
-      })()
-    `;
-        const res = await page.evaluate(js);
-        if (res.status_code !== 0) {
-            throw new Error(`搜索失败: ${JSON.stringify(res)}`);
-        }
+        const url = `https://www.douyin.com/aweme/v1/web/search/item/?keyword=${encodeURIComponent(kwargs.keyword)}&count=${kwargs.limit}&aid=1128`;
+        const res = await browserFetch(page, 'GET', url);
         const awemeList = res.data?.map(d => d.aweme_info).filter(Boolean) ?? [];
         return awemeList.map(item => ({
             aweme_id: item.aweme_id,
