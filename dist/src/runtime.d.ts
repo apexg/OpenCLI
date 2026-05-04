@@ -29,10 +29,12 @@ export interface IBrowserFactory {
         timeout?: number;
         workspace?: string;
         cdpEndpoint?: string;
+        initialUrl?: string;
     }): Promise<IPage>;
     close(): Promise<void>;
 }
 export declare function browserSession<T>(BrowserFactory: new () => IBrowserFactory, fn: (page: IPage) => Promise<T>, opts?: {
     workspace?: string;
     cdpEndpoint?: string;
+    initialUrl?: string;
 }): Promise<T>;

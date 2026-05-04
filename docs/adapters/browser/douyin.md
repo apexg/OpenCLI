@@ -39,6 +39,19 @@ opencli douyin drafts
 opencli douyin video-detail 7601066327335390510
 opencli douyin video-detail 7601066327335390510 --comments 10
 
+ # 获取 10 条评论
+  opencli douyin video-detail <aweme_id> --comments 10
+
+  # 获取所有顶级评论
+  opencli douyin video-detail <aweme_id> --comments -1
+
+  # 获取所有评论（含回复）
+  opencli douyin video-detail <aweme_id> --comments -1 --replies -1
+
+  # 获取 20 条评论，每条带 3 条回复
+  opencli douyin video-detail <aweme_id> --comments 20 --replies 3
+
+
 # 发布前辅助信息
 opencli douyin collections
 opencli douyin activities

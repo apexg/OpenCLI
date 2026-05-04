@@ -60,6 +60,7 @@ export async function browserSession(BrowserFactory, fn, opts = {}) {
             timeout: DEFAULT_BROWSER_CONNECT_TIMEOUT,
             workspace: opts.workspace,
             cdpEndpoint: opts.cdpEndpoint,
+            initialUrl: opts.initialUrl,
         });
         return await fn(page);
     }

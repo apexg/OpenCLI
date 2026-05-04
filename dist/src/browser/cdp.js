@@ -1,6 +1,17 @@
 /**
  * CDP client — implements IPage by connecting directly to a Chrome/Electron CDP WebSocket.
  *
+ * Architecture:
+ * - Reuses user's existing browser context (Cookie sharing)
+ * - Creates a new page target in the default browser context
+ * - On close: closes the page target (not the browser context)
+ *
+ * This ensures:
+ * - Cookie sharing with user's logged-in sessions
+ * - No need to re-login for each command
+ * - Clean page cleanup after each session
+ * - User's existing pages are not affected
+ *
  * Fixes applied:
  * - send() now has a 30s timeout guard (P0 #4)
  * - goto() waits for Page.loadEventFired instead of hardcoded 1s sleep (P1 #3)
@@ -24,89 +35,227 @@ const CDP_SEND_TIMEOUT = 30_000;
 // surface `responseBodyFullSize` + `responseBodyTruncated` so downstream layers
 // can tell the agent what happened instead of lying about the payload.
 export const CDP_RESPONSE_BODY_CAPTURE_LIMIT = 8 * 1024 * 1024;
+/**
+ * CDPBridge - Manages CDP connections with Cookie sharing.
+ *
+ * Connection flow:
+ * 1. Get browser WebSocket URL from /json/version
+ * 2. Create a new page target in the DEFAULT browser context (shares cookies)
+ * 3. Connect to the page target's WebSocket
+ * 4. Execute commands on the page
+ * 5. On close: close target → close WebSocket
+ */
 export class CDPBridge {
+    // Page-level WebSocket for actual page operations
     _ws = null;
     _idCounter = 0;
     _pending = new Map();
     _eventListeners = new Map();
+    // Target state
+    _targetId;
+    _cdpEndpoint;
     async connect(opts) {
         if (this._ws)
             throw new Error('CDPBridge is already connected. Call close() before reconnecting.');
         const endpoint = opts?.cdpEndpoint ?? process.env.OPENCLI_CDP_ENDPOINT;
         if (!endpoint)
             throw new Error('CDP endpoint not provided (pass cdpEndpoint or set OPENCLI_CDP_ENDPOINT)');
-        let wsUrl = endpoint;
-        if (endpoint.startsWith('http')) {
-            const targets = await fetchJsonDirect(`${endpoint.replace(/\/$/, '')}/json`);
-            const target = selectCDPTarget(targets);
-            if (!target || !target.webSocketDebuggerUrl) {
-                throw new Error('No inspectable targets found at CDP endpoint');
+        this._cdpEndpoint = endpoint.replace(/\/$/, '');
+        const timeoutMs = (opts?.timeout ?? 30) * 1000;
+        const initialUrl = opts?.initialUrl && opts.initialUrl !== 'about:blank' ? opts.initialUrl : undefined;
+        try {
+            // Direct ws:// URL: connect directly (used by tests and some Electron scenarios)
+            if (this._cdpEndpoint.startsWith('ws://') || this._cdpEndpoint.startsWith('wss://')) {
+                await this._connectPage(this._cdpEndpoint, timeoutMs);
+                return new CDPPage(this);
             }
-            wsUrl = target.webSocketDebuggerUrl;
+            // Step 1: Get browser WebSocket URL from /json/version
+            const version = await fetchJsonDirect(`${this._cdpEndpoint}/json/version`);
+            if (!version?.webSocketDebuggerUrl) {
+                throw new Error('No webSocketDebuggerUrl found in /json/version response');
+            }
+            const browserWsUrl = version.webSocketDebuggerUrl;
+            // Step 2: Connect to browser WebSocket temporarily to create a new page
+            const browserWs = await this._connectBrowserTemp(browserWsUrl, timeoutMs);
+            // Step 3: Create new page target (in DEFAULT browser context - shares cookies)
+            // Use initialUrl directly so the tab opens at the target domain instead of about:blank
+            const targetResult = await this._sendOnWs(browserWs, 'Target.createTarget', {
+                url: initialUrl ?? 'about:blank',
+                // NOT specifying browserContextId - uses default context (shares user's cookies)
+            });
+            if (!targetResult?.targetId) {
+                browserWs.close();
+                throw new Error('Failed to create page target');
+            }
+            this._targetId = targetResult.targetId;
+            // Step 4: Close browser WebSocket (we'll connect to the page WebSocket)
+            browserWs.close();
+            // Step 5: Wait a bit for the target to be ready
+            await new Promise(resolve => setTimeout(resolve, 100));
+            // Step 6: Get the WebSocket URL for the new target
+            const targets = await fetchJsonDirect(`${this._cdpEndpoint}/json`);
+            const targetWs = targets.find(t => t.id === this._targetId);
+            const pageWsUrl = targetWs?.webSocketDebuggerUrl;
+            if (!pageWsUrl) {
+                throw new Error('Failed to get WebSocket URL for the new page target');
+            }
+            // Step 7: Connect to page target WebSocket
+            await this._connectPage(pageWsUrl, timeoutMs);
+            return new CDPPage(this);
         }
+        catch (err) {
+            // Cleanup on failure
+            await this._cleanupOnFailure();
+            throw err;
+        }
+    }
+    /**
+     * Connect to browser WebSocket temporarily (for creating targets).
+     */
+    async _connectBrowserTemp(wsUrl, timeoutMs) {
         return new Promise((resolve, reject) => {
             const ws = new WebSocket(wsUrl);
-            const timeoutMs = (opts?.timeout ?? 10) * 1000;
             const timeout = setTimeout(() => {
-                this._ws = null;
                 ws.close();
-                reject(new Error('CDP connect timeout'));
+                reject(new Error('Browser WebSocket connect timeout'));
             }, timeoutMs);
-            ws.on('open', async () => {
+            ws.on('open', () => {
                 clearTimeout(timeout);
-                this._ws = ws;
-                try {
-                    await this.send('Page.enable');
-                    // Inject stealth scripts only when OPENCLI_CDP_STEALTH is not explicitly disabled.
-                    // Default: enabled (stealth injected). Set OPENCLI_CDP_STEALTH=false to skip.
-                    const stealthDisabled = process.env.OPENCLI_CDP_STEALTH === 'false' || process.env.OPENCLI_CDP_STEALTH === '0';
-                    if (!stealthDisabled) {
-                        await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
-                    }
-                }
-                catch (err) {
-                    ws.close();
-                    reject(err instanceof Error ? err : new Error(String(err)));
-                    return;
-                }
-                resolve(new CDPPage(this));
+                resolve(ws);
             });
             ws.on('error', (err) => {
                 clearTimeout(timeout);
                 reject(err);
             });
-            ws.on('message', (data) => {
+        });
+    }
+    /**
+     * Send a command on a specific WebSocket (for temporary browser connection).
+     */
+    _sendOnWs(ws, method, params = {}, timeoutMs = CDP_SEND_TIMEOUT) {
+        return new Promise((resolve, reject) => {
+            const id = ++this._idCounter;
+            const timer = setTimeout(() => {
+                reject(new Error(`CDP command '${method}' timed out`));
+            }, timeoutMs);
+            const handler = (data) => {
                 try {
                     const msg = JSON.parse(data.toString());
-                    if (msg.id && this._pending.has(msg.id)) {
-                        const entry = this._pending.get(msg.id);
-                        clearTimeout(entry.timer);
-                        this._pending.delete(msg.id);
+                    if (msg.id === id) {
+                        clearTimeout(timer);
+                        ws.off('message', handler);
                         if (msg.error) {
-                            entry.reject(new Error(msg.error.message));
+                            reject(new Error(msg.error.message));
                         }
                         else {
-                            entry.resolve(msg.result);
+                            resolve(msg.result);
                         }
                     }
-                    if (msg.method) {
-                        const listeners = this._eventListeners.get(msg.method);
-                        if (listeners) {
-                            for (const fn of listeners)
-                                fn(msg.params);
-                        }
+                }
+                catch { /* ignore parse errors */ }
+            };
+            ws.on('message', handler);
+            ws.send(JSON.stringify({ id, method, params }));
+        });
+    }
+    /**
+     * Connect to page-level WebSocket for page operations.
+     */
+    async _connectPage(wsUrl, timeoutMs) {
+        return new Promise((resolve, reject) => {
+            const ws = new WebSocket(wsUrl);
+            const timeout = setTimeout(() => {
+                ws.close();
+                reject(new Error('Page WebSocket connect timeout'));
+            }, timeoutMs);
+            ws.on('open', async () => {
+                clearTimeout(timeout);
+                this._ws = ws;
+                this._setupPageMessageHandler(ws);
+                try {
+                    await this.send('Page.enable');
+                    // Inject stealth scripts only when OPENCLI_CDP_STEALTH is not explicitly disabled.
+                    const stealthDisabled = process.env.OPENCLI_CDP_STEALTH === 'false' || process.env.OPENCLI_CDP_STEALTH === '0';
+                    if (!stealthDisabled) {
+                        await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
                     }
+                    resolve();
                 }
                 catch (err) {
-                    if (process.env.OPENCLI_VERBOSE) {
-                        // eslint-disable-next-line no-console
-                        console.error('[cdp] Failed to parse WebSocket message:', err instanceof Error ? err.message : err);
-                    }
+                    ws.close();
+                    reject(err);
                 }
+            });
+            ws.on('error', (err) => {
+                clearTimeout(timeout);
+                reject(err);
             });
         });
     }
+    /**
+     * Setup message handler for page-level WebSocket.
+     */
+    _setupPageMessageHandler(ws) {
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+                if (msg.id && this._pending.has(msg.id)) {
+                    const entry = this._pending.get(msg.id);
+                    clearTimeout(entry.timer);
+                    this._pending.delete(msg.id);
+                    if (msg.error) {
+                        entry.reject(new Error(msg.error.message));
+                    }
+                    else {
+                        entry.resolve(msg.result);
+                    }
+                }
+                if (msg.method) {
+                    const listeners = this._eventListeners.get(msg.method);
+                    if (listeners) {
+                        for (const fn of listeners)
+                            fn(msg.params);
+                    }
+                }
+            }
+            catch (err) {
+                if (process.env.OPENCLI_VERBOSE) {
+                    console.error('[cdp-page] Failed to parse message:', err);
+                }
+            }
+        });
+    }
+    /**
+     * Cleanup resources on connection failure.
+     */
+    async _cleanupOnFailure() {
+        // Close page WebSocket
+        if (this._ws) {
+            this._ws.close();
+            this._ws = null;
+        }
+        this._targetId = undefined;
+        this._pending.clear();
+    }
+    /**
+     * Mark the target as already closed (e.g. by closeWindow) to avoid double-close.
+     */
+    markTargetClosed() {
+        this._targetId = undefined;
+    }
+    /**
+     * Close the CDP connection and cleanup all resources.
+     */
     async close() {
+        // Close the page target first (via CDP if we have a connection)
+        // Skip if target was already closed by closeWindow()
+        if (this._ws?.readyState === WebSocket.OPEN && this._targetId) {
+            try {
+                await this.send('Target.closeTarget', { targetId: this._targetId });
+            }
+            catch { /* ignore */ }
+        }
+        // Close page WebSocket
         if (this._ws) {
             this._ws.close();
             this._ws = null;
@@ -117,7 +266,17 @@ export class CDPBridge {
         }
         this._pending.clear();
         this._eventListeners.clear();
+        this._targetId = undefined;
     }
+    /**
+     * Get the target ID of the current page (for CDPPage to use).
+     */
+    getTargetId() {
+        return this._targetId;
+    }
+    /**
+     * Send command via page-level WebSocket.
+     */
     async send(method, params = {}, timeoutMs = CDP_SEND_TIMEOUT) {
         if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
             throw new Error('CDP connection is not open');
@@ -178,6 +337,8 @@ class CDPPage extends BasePage {
     constructor(bridge) {
         super();
         this.bridge = bridge;
+        // Set the target ID for closeWindow()
+        this._currentTargetId = bridge.getTargetId();
     }
     async goto(url, options) {
         if (!this._pageEnabled) {
@@ -343,7 +504,7 @@ class CDPPage extends BasePage {
                 page: pageId,
                 url: target.url,
                 title: target.title,
-                active: false,
+                active: pageId === this._currentTargetId,
             };
         });
     }
@@ -408,11 +569,17 @@ class CDPPage extends BasePage {
     }
     /**
      * Close the current browser window/target.
-     * In direct CDP mode, this closes the connected target via Target.closeTarget.
+     * In Cookie-sharing mode, this closes the page but not the browser context.
+     * Also marks the target as closed on the bridge to prevent double-close.
      */
     async closeWindow() {
+        // Close the target via CDP
         if (this._currentTargetId) {
-            await this.bridge.send('Target.closeTarget', { targetId: this._currentTargetId });
+            try {
+                await this.bridge.send('Target.closeTarget', { targetId: this._currentTargetId });
+            }
+            catch { /* ignore */ }
+            this.bridge.markTargetClosed();
         }
         this._currentTargetId = undefined;
         this._lastUrl = null;
@@ -881,6 +1048,10 @@ function matchesCookieDomain(cookieDomain, targetDomain) {
     return normalizedTargetDomain === normalizedCookieDomain
         || normalizedTargetDomain.endsWith(`.${normalizedCookieDomain}`);
 }
+/**
+ * Select the best CDP target from a list.
+ * Note: In Cookie-sharing mode, this is only used for Electron apps.
+ */
 function selectCDPTarget(targets) {
     const preferredPattern = compilePreferredPattern(process.env.OPENCLI_CDP_TARGET);
     const ranked = targets
