@@ -19,7 +19,7 @@ docs/.vitepress/cache
 .envrc
 .windsurf
 .cortex
-
+dist/
 # Database files
 *.db
 autoresearch/results/

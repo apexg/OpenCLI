@@ -3,14 +3,14 @@ import { browserFetch } from './_shared/browser-fetch.js';
 import { ArgumentError } from '@jackwener/opencli/errors';
 cli({
     site: 'douyin',
-    name: 'search',
-    description: '根据关键词搜索视频',
+    name: 'search-sort',
+    description: '根据关键词搜索视频（支持排序）',
     domain: 'www.douyin.com',
     strategy: Strategy.COOKIE,
     args: [
         { name: 'keyword', required: true, positional: true, help: '搜索关键词' },
+        { name: 'sort', required: true, positional: true, choices: ['default', 'most_like', 'latest'], help: '排序方式：default=综合排序, most_like=最多点赞, latest=最新发布' },
         { name: 'limit', type: 'int', default: 10, help: '返回数量（默认10）' },
-        { name: 'sort', default: 'default', choices: ['default', 'most_like', 'latest'], help: '排序方式：default=综合排序, most_like=最多点赞, latest=最新发布' },
     ],
     columns: ['aweme_id', 'title', 'author', 'digg_count', 'create_time'],
     func: async (page, kwargs) => {

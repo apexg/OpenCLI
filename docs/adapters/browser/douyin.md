@@ -29,11 +29,24 @@
 ## Usage Examples
 
 ```bash
+
+
 # 账号与作品
 opencli douyin profile
 opencli douyin videos --limit 10
 opencli douyin videos --status scheduled
 opencli douyin drafts
+
+
+  # 综合排序（默认）
+  opencli douyin search-sort "美食" default --limit 10
+
+  # 最多点赞
+  opencli douyin search-sort "美食" most_like --limit 10
+
+  # 最新发布
+  opencli douyin search-sort "美食" latest --limit 10
+
 
 # 视频详情与评论
 opencli douyin video-detail 7601066327335390510

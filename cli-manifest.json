@@ -6108,6 +6108,18 @@
         "default": 10,
         "required": false,
         "help": "返回数量（默认10）"
+      },
+      {
+        "name": "sort",
+        "type": "str",
+        "default": "default",
+        "required": false,
+        "help": "排序方式：default=综合排序, most_like=最多点赞, latest=最新发布",
+        "choices": [
+          "default",
+          "most_like",
+          "latest"
+        ]
       }
     ],
     "columns": [
@@ -6120,6 +6132,53 @@
     "type": "js",
     "modulePath": "douyin/search.js",
     "sourceFile": "douyin/search.js",
+    "navigateBefore": "https://www.douyin.com"
+  },
+  {
+    "site": "douyin",
+    "name": "search-sort",
+    "description": "根据关键词搜索视频（支持排序）",
+    "domain": "www.douyin.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "keyword",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "搜索关键词"
+      },
+      {
+        "name": "sort",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "排序方式：default=综合排序, most_like=最多点赞, latest=最新发布",
+        "choices": [
+          "default",
+          "most_like",
+          "latest"
+        ]
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 10,
+        "required": false,
+        "help": "返回数量（默认10）"
+      }
+    ],
+    "columns": [
+      "aweme_id",
+      "title",
+      "author",
+      "digg_count",
+      "create_time"
+    ],
+    "type": "js",
+    "modulePath": "douyin/search-sort.js",
+    "sourceFile": "douyin/search-sort.js",
     "navigateBefore": "https://www.douyin.com"
   },
   {
