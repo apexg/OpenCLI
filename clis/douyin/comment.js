@@ -26,7 +26,8 @@ cli({
             params.set('reply_id', kwargs.reply_id);
         }
         const url = 'https://www.douyin.com/aweme/v1/web/comment/publish/?aid=6383';
-        const res = await browserFetch(page, 'POST', url, { formBody: params.toString() });
+        const formBody = params.toString();
+        const res = await browserFetch(page, 'POST', url, { formBody });
         if (!res.comment) {
             throw new CommandExecutionError('评论失败', JSON.stringify(res));
         }

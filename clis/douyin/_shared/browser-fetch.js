@@ -11,24 +11,42 @@ export async function browserFetch(page, method, url, options = {}) {
     const contentType = isForm
         ? 'application/x-www-form-urlencoded'
         : 'application/json';
-    const bodyJs = isForm
-        ? `body: ${JSON.stringify(options.formBody)},`
-        : options.body
-            ? `body: JSON.stringify(${JSON.stringify(options.body)}),`
-            : '';
+    // Safely handle form body by storing it in a variable first
     const js = `
     (async () => {
-      const res = await fetch(${JSON.stringify(url)}, {
-        method: ${JSON.stringify(method)},
-        credentials: 'include',
-        headers: {
-          'Content-Type': ${JSON.stringify(contentType)},
-          referer: 'https://www.douyin.com/',
-          ...${JSON.stringify(options.headers ?? {})}
-        },
-        ${bodyJs}
-      });
-      return res.json();
+      try {
+        const formBody = ${JSON.stringify(options.formBody || '')};
+        const jsonData = ${JSON.stringify(options.body || null)};
+
+        const requestOptions = {
+          method: ${JSON.stringify(method)},
+          credentials: 'include',
+          headers: {
+            'Content-Type': ${JSON.stringify(contentType)},
+            referer: 'https://www.douyin.com/',
+            ...${JSON.stringify(options.headers ?? {})}
+          }
+        };
+
+        if (formBody) {
+          requestOptions.body = formBody;
+        } else if (jsonData) {
+          requestOptions.body = JSON.stringify(jsonData);
+        }
+
+        const res = await fetch(${JSON.stringify(url)}, requestOptions);
+        const text = await res.text();
+
+        try {
+          return JSON.parse(text);
+        } catch (e) {
+          console.error('Failed to parse JSON response. First 500 chars:', text.substring(0, 500));
+          throw new Error('JSON parse failed: ' + e.message);
+        }
+      } catch (error) {
+        console.error('Fetch error:', error.message);
+        throw error;
+      }
     })()
   `;
     const result = await page.evaluate(js);
