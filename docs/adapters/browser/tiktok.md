@@ -21,6 +21,9 @@
 | `opencli tiktok follow` | Follow a user |
 | `opencli tiktok unfollow` | Unfollow a user |
 | `opencli tiktok comment` | Comment on a video |
+| `opencli tiktok download` | Download video to local directory |
+| `opencli tiktok transcript` | Get video captions/transcript |
+| `opencli tiktok screenshot` | Take screenshot of user profile |
 
 ## Usage Examples
 
@@ -57,6 +60,16 @@ opencli tiktok unfollow --username nasa
 
 # Comment on a video
 opencli tiktok comment --url "https://www.tiktok.com/@user/video/123" --text "Great!"
+
+# Download video to local directory
+opencli tiktok download "https://www.tiktok.com/@user/video/123"
+opencli tiktok download "https://www.tiktok.com/@user/video/123" --path ~/Downloads/TikTok
+
+# Get video captions/transcript
+opencli tiktok transcript "https://www.tiktok.com/@user/video/123"
+
+# Take screenshot of user profile
+opencli tiktok screenshot maibespokehair --path ~/Downloads/TikTok
 
 # JSON output
 opencli tiktok profile --username tiktok -f json
