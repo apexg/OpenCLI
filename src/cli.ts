@@ -504,7 +504,8 @@ export function createProgram(BUILTIN_CLIS: string, USER_CLIS: string): Command 
 
   const browser = program
     .command('browser')
-    .description('Browser control — navigate, click, type, extract, wait (no LLM needed)');
+    .description('Browser control — navigate, click, type, extract, wait (no LLM needed)')
+    .option('--live', 'Keep browser session open after command (CDP mode only)');
 
   /**
    * Resolve a `<target>` (numeric ref or CSS selector) via the unified resolver.
@@ -564,9 +565,12 @@ export function createProgram(BUILTIN_CLIS: string, USER_CLIS: string): Command 
     return async (...args: any[]) => {
       const cdpEndpoint = process.env.OPENCLI_CDP_ENDPOINT;
       let bridge: import('./browser/index.js').BrowserBridge | import('./browser/cdp.js').CDPBridge | null = null;
+      let shouldKeepAlive = false;
       try {
         const command = args.at(-1) instanceof Command ? args.at(-1) as Command : undefined;
         const targetPage = getBrowserTargetId(command);
+        // Check for --live flag to keep browser session open
+        shouldKeepAlive = command?.opts()?.live === true;
         const { page, bridge: b } = await getBrowserPageWithBridge(targetPage);
         bridge = b;
         await fn(page, ...args);
@@ -590,7 +594,9 @@ export function createProgram(BUILTIN_CLIS: string, USER_CLIS: string): Command 
         process.exitCode = EXIT_CODES.GENERIC_ERROR;
       } finally {
         // CDP mode: close WebSocket connection to prevent process hanging
-        if (cdpEndpoint && bridge) {
+        // Skip if --live flag is set OR OPENCLI_BROWSER_KEEP_ALIVE is true
+        const keepAlive = shouldKeepAlive || process.env.OPENCLI_BROWSER_KEEP_ALIVE === 'true';
+        if (cdpEndpoint && bridge && !keepAlive) {
           try {
             await bridge.close();
           } catch {

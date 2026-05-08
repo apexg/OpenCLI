@@ -75,9 +75,23 @@ export class CDPBridge {
                 throw new Error('No webSocketDebuggerUrl found in /json/version response');
             }
             const browserWsUrl = version.webSocketDebuggerUrl;
-            // Step 2: Connect to browser WebSocket temporarily to create a new page
+            // Step 2: Get existing targets and try to reuse the first available page
+            const targets = await fetchJsonDirect(`${this._cdpEndpoint}/json`);
+            const existingPage = targets.find(t => t.type === 'page' && t.url !== 'about:blank');
+            if (existingPage) {
+                // Reuse existing page target
+                this._targetId = existingPage.id;
+                const pageWsUrl = existingPage.webSocketDebuggerUrl;
+                if (!pageWsUrl) {
+                    throw new Error('Failed to get WebSocket URL for existing page');
+                }
+                await this._connectPage(pageWsUrl, timeoutMs);
+                console.error(`[CDP] Reusing existing page: ${this._targetId}`);
+                return new CDPPage(this);
+            }
+            // Step 3: No existing page found, create a new one
             const browserWs = await this._connectBrowserTemp(browserWsUrl, timeoutMs);
-            // Step 3: Create new page target (in DEFAULT browser context - shares cookies)
+            // Step 4: Create new page target (in DEFAULT browser context - shares cookies)
             // Use initialUrl directly so the tab opens at the target domain instead of about:blank
             const targetResult = await this._sendOnWs(browserWs, 'Target.createTarget', {
                 url: initialUrl ?? 'about:blank',
@@ -88,18 +102,18 @@ export class CDPBridge {
                 throw new Error('Failed to create page target');
             }
             this._targetId = targetResult.targetId;
-            // Step 4: Close browser WebSocket (we'll connect to the page WebSocket)
+            // Step 5: Close browser WebSocket (we'll connect to the page WebSocket)
             browserWs.close();
-            // Step 5: Wait a bit for the target to be ready
+            // Step 6: Wait a bit for the target to be ready
             await new Promise(resolve => setTimeout(resolve, 100));
-            // Step 6: Get the WebSocket URL for the new target
-            const targets = await fetchJsonDirect(`${this._cdpEndpoint}/json`);
-            const targetWs = targets.find(t => t.id === this._targetId);
+            // Step 7: Get the WebSocket URL for the new target
+            const allTargets = await fetchJsonDirect(`${this._cdpEndpoint}/json`);
+            const targetWs = allTargets.find(t => t.id === this._targetId);
             const pageWsUrl = targetWs?.webSocketDebuggerUrl;
             if (!pageWsUrl) {
                 throw new Error('Failed to get WebSocket URL for the new page target');
             }
-            // Step 7: Connect to page target WebSocket
+            // Step 8: Connect to page target WebSocket
             await this._connectPage(pageWsUrl, timeoutMs);
             return new CDPPage(this);
         }
@@ -345,7 +359,10 @@ class CDPPage extends BasePage {
             await this.bridge.send('Page.enable');
             this._pageEnabled = true;
         }
-        const loadPromise = this.bridge.waitForEvent('Page.loadEventFired', 30_000).catch(() => { });
+        // Use domContentLoadedEventFired instead of loadEventFired (more reliable for SPA/Shopify sites)
+        const loadPromise = options?.waitUntil === 'none'
+            ? Promise.resolve()
+            : this.bridge.waitForEvent('Page.domContentLoadedEventFired', 10_000).catch(() => { });
         await this.bridge.send('Page.navigate', { url });
         await loadPromise;
         this._lastUrl = url;
